@@ -102,6 +102,8 @@ inspectable):
 
 | Tool                       | FFQN                                             |
 |----------------------------|--------------------------------------------------|
+| `obelisk.list_functions`   | `obelisk-agent:tools/webapi.list-functions`      |
+| `obelisk.get_function_wit` | `obelisk-agent:tools/webapi.get-function-wit`    |
 | `obelisk.list_executions`  | `obelisk-agent:tools/webapi.list-executions`     |
 | `obelisk.get_execution`    | `obelisk-agent:tools/webapi.get-execution`       |
 | `obelisk.get_logs`         | `obelisk-agent:tools/webapi.get-logs`            |

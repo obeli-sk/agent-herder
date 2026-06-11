@@ -102,10 +102,39 @@ env_vars = ["PATH"]
 # --- LLM-facing tools ---------------------------------------------------------
 
 [[activity_js]]
+name = "tool_list_functions"
+ffqn = "obelisk-agent:tools/webapi.list-functions"
+params = [
+  { name = "ffqn-prefix", type = "string" },
+  { name = "length", type = "u32" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/list-functions.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+
+[[activity_js]]
+name = "tool_get_function_wit"
+ffqn = "obelisk-agent:tools/webapi.get-function-wit"
+params = [
+  { name = "ffqn", type = "string" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/get-function-wit.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+
+[[activity_js]]
 name = "tool_list_executions"
 ffqn = "obelisk-agent:tools/webapi.list-executions"
 params = [
   { name = "ffqn-prefix", type = "string" },
+  { name = "execution-id-prefix", type = "string" },
+  { name = "show-derived", type = "bool" },
+  { name = "hide-finished", type = "bool" },
+  { name = "deployment-id", type = "string" },
   { name = "length", type = "u32" },
 ]
 return_type = "result<string, string>"
@@ -159,6 +188,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "${DEPLOYMENT_DIR}/activity/tools/get-result.js"
+exec.lock_expiry.hours = 1
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]

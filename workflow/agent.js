@@ -153,9 +153,23 @@ function dispatch(call, draft) {
 
     try {
         switch (name) {
+            case "obelisk.list_functions":
+                return ok(name, webapi.listFunctions(
+                    String(args.ffqn_prefix || ""),
+                    (args.length | 0) || 100,
+                ));
+            case "obelisk.get_function_wit":
+                return ok(name, webapi.getFunctionWit(requireString(args.ffqn, "ffqn")));
             case "obelisk.list_executions": {
                 const len = (args.length | 0) || 20;
-                return ok(name, webapi.listExecutions(String(args.ffqn_prefix || ""), len));
+                return ok(name, webapi.listExecutions(
+                    String(args.ffqn_prefix || ""),
+                    String(args.execution_id_prefix || ""),
+                    Boolean(args.show_derived),
+                    Boolean(args.hide_finished),
+                    String(args.deployment_id || ""),
+                    len,
+                ));
             }
             case "obelisk.get_execution":
                 return ok(name, webapi.getExecution(requireString(args.execution_id, "execution_id")));
