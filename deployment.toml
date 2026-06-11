@@ -225,6 +225,10 @@ name = "tool_get_deployment"
 ffqn = "obelisk-agent:tools/webapi.get-deployment"
 params = [
   { name = "deployment-id", type = "string" },
+  { name = "component-type", type = "option<string>" },
+  { name = "offset", type = "option<u32>" },
+  { name = "length", type = "option<u32>" },
+  { name = "max-bytes", type = "option<u32>" },
 ]
 return_type = "result<string, string>"
 location = "${DEPLOYMENT_DIR}/activity/tools/get-deployment.js"

@@ -260,7 +260,13 @@ function dispatch(call, draft) {
             case "obelisk.get_deployment":
                 // Sources are stripped server-side, so the child execution result
                 // is the compact record the model receives (not the full config).
-                return ok(name, webapi.getDeployment(requireString(args.deployment_id, "deployment_id")));
+                return ok(name, webapi.getDeployment(
+                    requireString(args.deployment_id, "deployment_id"),
+                    optionalString(args.component_type),
+                    optionalU32(args.offset),
+                    optionalU32(args.length),
+                    optionalU32(args.max_bytes),
+                ));
             case "obelisk.get_component_source":
                 // Sliced server-side so the child result is just the requested page.
                 return ok(name, webapi.getComponentSource(
@@ -584,6 +590,14 @@ function err(name, message) { return { name, outcome: { err: message } }; }
 function requireString(value, field) {
     if (typeof value !== "string" || !value) throw `${field} is required`;
     return value;
+}
+
+function optionalString(value) {
+    return typeof value === "string" && value ? value : null;
+}
+
+function optionalU32(value) {
+    return Number.isFinite(value) && value >= 0 ? Math.trunc(value) : null;
 }
 
 function sanitize(value) {

@@ -47,5 +47,18 @@ obelisk.list_deployments
     "length"?: number
   }
   Lists deployments newest first.
+obelisk.get_deployment
+  args: {
+    "deployment_id": string,
+    "component_type"?: string,
+    "offset"?: number,
+    "length"?: number,
+    "max_bytes"?: number
+  }
+  Returns the complete compact deployment when it fits. If entries must be
+  omitted, pagination.components reports returned, trimmed, and next_offset
+  for each config component array. To continue, pass that component_type and
+  next_offset; length limits the number of entries and max_bytes limits the
+  encoded result size.
 `;
 }
