@@ -64,10 +64,15 @@ obelisk.create_deployment
   Submits a new deployment from a JSON string. The new deployment is
   **inactive**. Use `obelisk.apply_deployment` to activate it.
 obelisk.apply_deployment
-  args: { "deployment_id": string }
+  args: { "deployment_id": string, "summary"?: string }
   Hot-redeploys the given deployment: applies it without restarting the
   server. Returns "switched" on success or "restart_required" if the change
   requires a restart. Equivalent to `obelisk deployment apply <id>`.
+  This call REQUIRES operator approval: it blocks until a human approves or
+  rejects the hot reload in the UI. Always pass a short `summary` describing
+  what the fix changes so the operator has context. On rejection the tool
+  returns an err ("operator declined ...") - treat that as a final decision:
+  do not retry the apply; report back or adjust per their note instead.
 
 input.ask_user
   args: { "question": string }

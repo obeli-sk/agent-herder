@@ -14,6 +14,7 @@
 
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run";
 const ASK_USER_FFQN = "obelisk-agent:tools/input.ask-user";
+const CONFIRM_FFQN = "obelisk-agent:tools/deploy.confirm-apply";
 
 export default async function handle(request) {
     const url = new URL(request.url);
@@ -32,6 +33,10 @@ export default async function handle(request) {
         if (method === "POST" && path.startsWith("/api/answer/")) {
             const childId = decodeURIComponent(path.substring("/api/answer/".length));
             return await answerStub(request, childId);
+        }
+        if (method === "POST" && path.startsWith("/api/confirm/")) {
+            const childId = decodeURIComponent(path.substring("/api/confirm/".length));
+            return await confirmDeploy(request, childId);
         }
     } catch (e) {
         return jsonError(500, String(e));
@@ -91,12 +96,13 @@ async function loadPromptPreview(execId) {
 // ----- detail -----------------------------------------------------------
 
 async function detailRun(id) {
-    const [status, prompt, walk, finalResult, pendingAsks] = await Promise.all([
+    const [status, prompt, walk, finalResult, pendingAsks, pendingConfirms] = await Promise.all([
         loadStatus(id),
         loadPrompt(id),
         loadResponses(id),
         loadFinalResult(id),
         loadPendingAsks(id),
+        loadPendingConfirms(id),
     ]);
     return {
         id,
@@ -107,6 +113,7 @@ async function detailRun(id) {
         turns: buildTurns(walk.replies, walk.toolChildren),
         final_result: finalResult,
         pending_asks: pendingAsks,
+        pending_confirms: pendingConfirms,
     };
 }
 
@@ -156,6 +163,127 @@ async function loadPendingAsks(workflowId) {
         } catch (_) {}
         return { id: e.execution_id, question };
     }));
+}
+
+// Pending hot-reload confirmations: confirm-apply stub children of this
+// workflow that are still unanswered. For each, read its created params
+// ([deployment_id, summary]) and build a source diff of the proposed
+// deployment against the currently active one so the operator can see exactly
+// what the fix changes before approving.
+async function loadPendingConfirms(workflowId) {
+    let candidates;
+    try {
+        candidates = await obeliskJson(
+            `/v1/executions?ffqn_prefix=${encodeURIComponent(CONFIRM_FFQN)}&show_derived=true&hide_finished=true&length=50`,
+        );
+    } catch (_) { return []; }
+    const mine = candidates.filter((e) => typeof e.execution_id === "string"
+        && e.execution_id.startsWith(workflowId + "."));
+    if (mine.length === 0) return [];
+
+    // The active deployment is shared across all pending confirms; fetch once.
+    const currentSources = await loadCurrentSources();
+
+    return await Promise.all(mine.map(async (e) => {
+        let deploymentId = null;
+        let summary = "";
+        try {
+            const evs = await obeliskJson(
+                `/v1/executions/${encodeURIComponent(e.execution_id)}/events?version_from=0&including_cursor=true&length=1`,
+            );
+            const p = evs.events?.[0]?.event?.created?.params;
+            if (Array.isArray(p)) {
+                if (typeof p[0] === "string") deploymentId = p[0];
+                if (typeof p[1] === "string") summary = p[1];
+            }
+        } catch (_) {}
+
+        let diff = null;
+        if (deploymentId) {
+            try {
+                const dep = await obeliskJson(`/v1/deployments/${encodeURIComponent(deploymentId)}`);
+                diff = diffSources(currentSources, collectSources(dep.config_json));
+            } catch (err) { diff = { error: String(err) }; }
+        }
+        return { id: e.execution_id, deployment_id: deploymentId, summary, diff };
+    }));
+}
+
+// Sources of the currently active deployment, keyed by file name. Returns {}
+// if there is no current deployment or it cannot be read. /v1/deployment-id
+// returns the active id as a JSON string; its config lives in the per-id GET.
+async function loadCurrentSources() {
+    try {
+        const id = await obeliskJson(`/v1/deployment-id`);
+        if (!id || typeof id !== "string") return {};
+        const dep = await obeliskJson(`/v1/deployments/${encodeURIComponent(id)}`);
+        return collectSources(dep.config_json);
+    } catch (_) { return {}; }
+}
+
+// Extract { fileName -> source } from a deployment's config_json. JS components
+// live under the *_js arrays; each carries its source either inline at the top
+// level (`content`) or under `location.content.{file_name, content}`.
+function collectSources(configJson) {
+    const out = {};
+    let cfg;
+    try { cfg = typeof configJson === "string" ? JSON.parse(configJson) : configJson; }
+    catch (_) { return out; }
+    if (!cfg || typeof cfg !== "object") return out;
+    for (const [key, value] of Object.entries(cfg)) {
+        if (!key.endsWith("_js") || !Array.isArray(value)) continue;
+        for (const comp of value) {
+            if (!comp || typeof comp !== "object") continue;
+            const inline = comp.location?.content;
+            const name = (inline && typeof inline.file_name === "string" && inline.file_name)
+                || comp.name || comp.ffqn || `${key}[?]`;
+            const src = (inline && typeof inline.content === "string") ? inline.content
+                : (typeof comp.content === "string" ? comp.content : null);
+            if (typeof src === "string") out[String(name)] = src;
+        }
+    }
+    return out;
+}
+
+// Compare two { fileName -> source } maps. Returns added / removed file names
+// and, for files present in both with different content, a line-level diff.
+function diffSources(oldMap, newMap) {
+    const oldKeys = new Set(Object.keys(oldMap));
+    const newKeys = new Set(Object.keys(newMap));
+    const added = [...newKeys].filter((k) => !oldKeys.has(k)).sort();
+    const removed = [...oldKeys].filter((k) => !newKeys.has(k)).sort();
+    const changed = [];
+    for (const k of [...newKeys].filter((x) => oldKeys.has(x)).sort()) {
+        if (oldMap[k] !== newMap[k]) {
+            changed.push({ file: k, lines: lineDiff(oldMap[k], newMap[k]) });
+        }
+    }
+    return { added, removed, changed };
+}
+
+// Minimal line-level diff via an LCS table. Returns a list of
+// { tag: " "|"-"|"+", text } rows, like a unified diff body.
+function lineDiff(oldText, newText) {
+    const a = String(oldText).split("\n");
+    const b = String(newText).split("\n");
+    const n = a.length, m = b.length;
+    const lcs = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i -= 1) {
+        for (let j = m - 1; j >= 0; j -= 1) {
+            lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1
+                : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+        }
+    }
+    const rows = [];
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+        if (a[i] === b[j]) { rows.push({ tag: " ", text: a[i] }); i += 1; j += 1; }
+        else if (lcs[i + 1][j] >= lcs[i][j + 1]) { rows.push({ tag: "-", text: a[i] }); i += 1; }
+        else { rows.push({ tag: "+", text: b[j] }); j += 1; }
+    }
+    while (i < n) { rows.push({ tag: "-", text: a[i] }); i += 1; }
+    while (j < m) { rows.push({ tag: "+", text: b[j] }); j += 1; }
+    return rows;
 }
 
 // Walk the workflow's responses and split them into:
@@ -321,6 +449,36 @@ async function answerStub(request, childId) {
     return jsonResponse({ ok: true });
 }
 
+// Approve or reject a pending hot-reload confirmation. Fulfils the confirm-apply
+// stub with its `ok` arm (approve => the workflow proceeds to switch) or its
+// `err` arm (reject => the workflow returns an err tool_result to the agent).
+async function confirmDeploy(request, childId) {
+    if (!childId) return jsonError(400, "missing child id");
+    let body;
+    try { body = await request.text(); }
+    catch (e) { return jsonError(400, `cannot read body: ${String(e)}`); }
+    let payload;
+    try { payload = JSON.parse(body); }
+    catch (e) { return jsonError(400, `body must be JSON: ${e.message}`); }
+    const approve = Boolean(payload?.approve);
+    const note = typeof payload?.note === "string" ? payload.note.trim() : "";
+    const stubResult = approve
+        ? { ok: note || "approved" }
+        : { err: note ? `operator declined: ${note}` : "operator declined" };
+    const resp = await fetch(
+        `${apiBase()}/v1/executions/${encodeURIComponent(childId)}/stub`,
+        {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(stubResult),
+        },
+    );
+    if (!resp.ok) {
+        return jsonError(502, `stub fulfil failed: HTTP ${resp.status} ${await resp.text()}`);
+    }
+    return jsonResponse({ ok: true });
+}
+
 // ----- SPA shell --------------------------------------------------------
 
 function htmlShell() {
@@ -398,6 +556,23 @@ const SHELL_HTML = `<!doctype html>
   form.ask p { margin: 0 0 0.5em; font-weight: 600; }
   form.ask textarea { width: 100%; min-height: 4em; padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
   form.ask button { margin-top: 0.4em; }
+  .confirm { background: #fff7ed; border: 1px solid #f0c98a; border-radius: 6px; padding: 0.8em 1em; margin: 1em 0; }
+  .confirm .label { color: var(--warn); }
+  .confirm h3 { margin: 0.1em 0 0.4em; font-size: 0.95rem; }
+  .confirm .dep-id { font: 12px/1 ui-monospace, monospace; color: var(--muted); }
+  .confirm .summary { margin: 0.4em 0 0.6em; white-space: pre-wrap; }
+  .confirm .diff { border: 1px solid var(--line); border-radius: 4px; background: white; margin: 0.5em 0; }
+  .confirm .diff > summary { padding: 0.4em 0.7em; cursor: pointer; font-weight: 600; }
+  .confirm .diff pre { margin: 0; padding: 0.4em 0; background: #fbfbfb; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; max-height: 22em; overflow-y: auto; }
+  .confirm .diff .dl { display: block; padding: 0 0.7em; }
+  .confirm .diff .dl.add { background: var(--ok-bg); color: var(--ok); }
+  .confirm .diff .dl.del { background: var(--err-bg); color: var(--err); }
+  .confirm .diff .fname { display: block; padding: 0.3em 0.7em; font-weight: 600; background: #f2f2f2; border-top: 1px solid var(--line); }
+  .confirm .changes { color: var(--muted); font-size: 0.85em; margin: 0.3em 0; }
+  .confirm .buttons { display: flex; gap: 0.5em; margin-top: 0.6em; }
+  .confirm .note { width: 100%; min-height: 2.5em; margin-top: 0.4em; padding: 0.4em; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+  .confirm button.approve { border: 1px solid var(--ok); background: var(--ok); color: white; border-radius: 4px; padding: 0.4em 0.9em; cursor: pointer; font: inherit; }
+  .confirm button.reject { border: 1px solid var(--err); background: white; color: var(--err); border-radius: 4px; padding: 0.4em 0.9em; cursor: pointer; font: inherit; }
   .err-box { background: var(--err-bg); border: 1px solid #f4c0c0; color: var(--err); padding: 0.6em 0.9em; border-radius: 4px; margin: 1em 0; }
   .ago { color: var(--muted); font-size: 0.8em; }
 </style>
@@ -530,7 +705,7 @@ function renderDetail() {
   const sig = JSON.stringify({
     id: d.id, status: d.status, result_kind: d.result_kind,
     prompt: d.prompt, turns: d.turns, final_result: d.final_result,
-    pending_asks: d.pending_asks,
+    pending_asks: d.pending_asks, pending_confirms: d.pending_confirms,
   });
   if (sig === state.lastSig) return;
 
@@ -555,6 +730,9 @@ function renderDetail() {
     + '</form>'
   ).join('') : '';
 
+  const confirmsHtml = (d.pending_confirms && d.pending_confirms.length)
+    ? d.pending_confirms.map(renderConfirm).join('') : '';
+
   const finalHtml = renderFinal(d);
 
   main.innerHTML = ''
@@ -565,6 +743,7 @@ function renderDetail() {
     +   ' &middot; ' + esc(ago(d.created_at))
     + '</div>'
     + (d.prompt ? '<div class="bubble user"><div class="label">prompt</div><pre>' + esc(d.prompt) + '</pre></div>' : '')
+    + confirmsHtml
     + asksHtml
     + turnsHtml
     + finalHtml;
@@ -579,6 +758,59 @@ function renderDetail() {
       submitAnswer(f.dataset.child, f.querySelector('textarea').value);
     });
   }
+
+  for (const card of main.querySelectorAll('.confirm')) {
+    const child = card.dataset.child;
+    const note = () => (card.querySelector('.note')?.value || '').trim();
+    card.querySelector('button.approve')?.addEventListener('click', () => sendConfirm(child, true, note()));
+    card.querySelector('button.reject')?.addEventListener('click', () => sendConfirm(child, false, note()));
+  }
+}
+
+// One pending hot-reload confirmation: agent summary, target deployment, the
+// source diff vs the active deployment, and Approve/Reject controls.
+function renderConfirm(c) {
+  const diff = c.diff;
+  let diffHtml;
+  if (!diff) {
+    diffHtml = '<p class="changes">(no diff available)</p>';
+  } else if (diff.error) {
+    diffHtml = '<p class="changes">Could not build diff: ' + esc(diff.error) + '</p>';
+  } else {
+    const counts = [];
+    if (diff.added.length) counts.push(diff.added.length + ' added');
+    if (diff.removed.length) counts.push(diff.removed.length + ' removed');
+    if (diff.changed.length) counts.push(diff.changed.length + ' changed');
+    const summary = counts.length ? counts.join(', ') : 'no source changes';
+    let body = '';
+    for (const f of diff.added) body += '<span class="fname">+ ' + esc(f) + ' (new file)</span>';
+    for (const f of diff.removed) body += '<span class="fname">- ' + esc(f) + ' (removed)</span>';
+    for (const ch of diff.changed) {
+      body += '<span class="fname">~ ' + esc(ch.file) + '</span><pre>' + renderDiffLines(ch.lines) + '</pre>';
+    }
+    diffHtml = '<details class="diff"' + (diff.changed.length || diff.added.length ? ' open' : '') + '>'
+      + '<summary>Source diff vs active deployment (' + esc(summary) + ')</summary>'
+      + body + '</details>';
+  }
+  return '<div class="confirm" data-child="' + esc(c.id) + '">'
+    + '<div class="label">hot reload pending approval</div>'
+    + '<h3>Apply deployment?</h3>'
+    + (c.deployment_id ? '<div class="dep-id">' + esc(c.deployment_id) + '</div>' : '')
+    + (c.summary ? '<div class="summary">' + esc(c.summary) + '</div>' : '')
+    + diffHtml
+    + '<textarea class="note" placeholder="Optional note (shown to the agent)"></textarea>'
+    + '<div class="buttons">'
+    +   '<button type="button" class="approve">Approve &amp; hot reload</button>'
+    +   '<button type="button" class="reject">Reject</button>'
+    + '</div>'
+    + '</div>';
+}
+
+function renderDiffLines(lines) {
+  return (lines || []).map((l) => {
+    const cls = l.tag === '+' ? 'dl add' : (l.tag === '-' ? 'dl del' : 'dl');
+    return '<span class="' + cls + '">' + esc(l.tag + ' ' + l.text) + '</span>';
+  }).join('');
 }
 
 function renderTurn(t, i) {
@@ -688,6 +920,25 @@ async function submitAnswer(childId, answer) {
     await refreshDetail();
   } catch (e) {
     alert('Answer failed: ' + String(e));
+  }
+}
+
+async function sendConfirm(childId, approve, note) {
+  if (!approve && !confirm('Reject this hot reload?')) return;
+  try {
+    const r = await fetch('/api/confirm/' + encodeURIComponent(childId), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approve, note }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    state.lastSig = null;
+    await refreshDetail();
+  } catch (e) {
+    alert((approve ? 'Approve' : 'Reject') + ' failed: ' + String(e));
   }
 }
 

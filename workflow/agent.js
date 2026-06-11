@@ -3,6 +3,7 @@ import * as codex from "obelisk-agent:agent/codex";
 import * as session from "obelisk-agent:agent/session";
 import * as webapi from "obelisk-agent:tools/webapi";
 import * as askUser from "obelisk-agent:tools/input";
+import * as deploy from "obelisk-agent:tools/deploy";
 
 const RECV_TIMEOUT_MS = 30000;
 const MAX_RECV_PER_TURN = 60; // 60 * 30s = 30 min ceiling per agent turn
@@ -165,8 +166,16 @@ function dispatch(call) {
                     requireString(args.config_json, "config_json"),
                     Boolean(args.verify),
                 ));
-            case "obelisk.apply_deployment":
-                return ok(name, webapi.applyDeployment(requireString(args.deployment_id, "deployment_id")));
+            case "obelisk.apply_deployment": {
+                const id = requireString(args.deployment_id, "deployment_id");
+                const summary = typeof args.summary === "string" ? args.summary : "";
+                // Durable human gate: park until an operator approves/rejects in
+                // the UI. confirmApply returns ok(note) on approve; on reject (or
+                // cancel) it throws the err arm, which the catch below turns into
+                // an err tool_result so the agent learns the operator declined.
+                deploy.confirmApply(id, summary);
+                return ok(name, webapi.applyDeployment(id));
+            }
             case "input.ask_user":
                 return ok(name, JSON.stringify({ answer: askUser.askUser(requireString(args.question, "question")) }));
             default:

@@ -219,6 +219,19 @@ params = [
 ]
 return_type = "result<string, string>"
 
+# confirm-apply: the human gate before a hot reload goes live. The workflow
+# parks on this stub when the agent requests obelisk.apply_deployment; the web
+# UI surfaces it as an Approve/Reject card (with a source diff vs the active
+# deployment). ok => approved (apply proceeds), err => rejected (apply skipped).
+[[activity_stub]]
+name = "tool_confirm_apply"
+ffqn = "obelisk-agent:tools/deploy.confirm-apply"
+params = [
+  { name = "deployment-id", type = "string" },
+  { name = "summary",       type = "string" },
+]
+return_type = "result<string, string>"
+
 # --- Workflow -----------------------------------------------------------------
 
 [[workflow_js]]
@@ -240,6 +253,7 @@ routes = [
   { methods = ["GET"], route = "/api/runs/:execution-id" },
   { methods = ["POST"], route = "/api/submit" },
   { methods = ["POST"], route = "/api/answer/:child-id" },
+  { methods = ["POST"], route = "/api/confirm/:child-id" },
 ]
 env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
