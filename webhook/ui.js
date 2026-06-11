@@ -928,11 +928,11 @@ function renderLogs() {
     const text = entry.type === 'stream' ? decodeStream(entry.payload) : String(entry.message || '');
     const level = entry.level ? ' level-' + esc(entry.level) : '';
     return '<span class="source">[' + esc(source.trim()) + ']</span> '
-      + '<span class="' + level.trim() + '">' + esc(text.replace(/\n$/, '')) + '</span>';
+      + '<span class="' + level.trim() + '">' + esc(text.replace(/\\n$/, '')) + '</span>';
   });
   return '<div class="logs"><div class="logs-head"><span>execution logs · ' + rows.length
     + ' entries</span><button type="button" id="logs-refresh">refresh</button></div><pre>'
-    + (rows.join('\n') || '(no logs yet)') + '</pre></div>';
+    + (rows.join('\\n') || '(no logs yet)') + '</pre></div>';
 }
 
 function shortFfqn(ffqn) {
