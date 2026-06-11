@@ -1,5 +1,7 @@
+# --- Agent lifecycle: provider-specific start (codex.start etc. come later) ---
+
 [[activity_exec]]
-ffqn = "obelisk-agent:agent/agent.start"
+ffqn = "obelisk-agent:agent/claude.start"
 params = [
   { name = "container-name", type = "string" },
   { name = "socket", type = "string" },
@@ -18,11 +20,18 @@ env_vars = [
   { key = "AGENT_HOST_CLAUDE_DIR",  value = "${AGENT_HOST_CLAUDE_DIR:-${HOME}/.claude}" },
 ]
 
+# --- Agent session: provider-agnostic send / recv / cleanup -------------------
+#
+# Common schema for talking to any agent backend. The container's server.js
+# normalizes the backend's native output (claude stream-json today) into these
+# types, so the workflow and UI never parse LLM JSON.
+
+# agent-input: what the workflow sends to the agent each turn.
 [[activity_exec]]
-ffqn = "obelisk-agent:agent/agent.send"
+ffqn = "obelisk-agent:agent/session.send"
 params = [
   { name = "socket", type = "string" },
-  { name = "message", type = "string" },
+  { name = "input", type = "variant { prompt(string), tool-results(list<record { name: string, outcome: result<string, string> }>) }" },
 ]
 return_type = "result<_, string>"
 location = "${DEPLOYMENT_DIR}/activity/agent-send.js"
@@ -30,21 +39,25 @@ exec.lock_expiry.seconds = 30
 max_retries = 3
 env_vars = ["PATH"]
 
+# turn-outcome (ok): one poll of the current turn (`working` => poll again,
+#   `reply` => the turn produced a parsed agent-reply).
+# agent-error (err): structured failures; cases containing `permanent` are not
+#   retried (the workflow handles rate-limit by sleeping).
 [[activity_exec]]
-ffqn = "obelisk-agent:agent/agent.recv"
+ffqn = "obelisk-agent:agent/session.recv"
 params = [
   { name = "socket", type = "string" },
   { name = "timeout-ms", type = "u32" },
 ]
-return_type = "result<record { events: string, done: bool, exited: bool }, string>"
+return_type = "result<variant { working, reply(variant { final(string), tool-calls(list<record { name: string, arguments-json: string }>) }) }, variant { permanent-rate-limited(record { retry-after-seconds: u32, message: string }), permanent-agent-exited(string), permanent-error(string), transient-error(string), execution-failed }>"
 location = "${DEPLOYMENT_DIR}/activity/agent-recv.js"
 exec.lock_expiry.minutes = 2
-max_output_bytes = 1048576   # 1 MiB; default 4 KiB overflows on bigger claude responses (e.g. summaries of get_deployment output)
+max_output_bytes = 1048576   # 1 MiB; default 4 KiB overflows on bigger claude replies
 max_retries = 3
 env_vars = ["PATH"]
 
 [[activity_exec]]
-ffqn = "obelisk-agent:agent/agent.cleanup"
+ffqn = "obelisk-agent:agent/session.cleanup"
 params = [
   { name = "container-name", type = "string" },
   { name = "socket", type = "string" },

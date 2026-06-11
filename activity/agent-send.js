@@ -41,10 +41,13 @@ function request(socketPath, payload) {
 
 async function main() {
   const socketPath = parseJsonArg(2, "socket");
-  const message = parseJsonArg(3, "message");
-  if (typeof message !== "string") failPermanent("message must be a string");
+  // input is the common agent-input variant: { prompt } | { tool_results }.
+  const input = parseJsonArg(3, "input");
+  const valid = input && typeof input === "object" &&
+    (typeof input.prompt === "string" || Array.isArray(input.tool_results));
+  if (!valid) failPermanent("input must be { prompt } or { tool_results }");
 
-  const response = await request(socketPath, { op: "send", message });
+  const response = await request(socketPath, { op: "send", input });
   if (!response.ok) fail(response.error || "send failed");
   writeOk(null);
 }

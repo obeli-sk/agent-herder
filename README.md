@@ -10,57 +10,93 @@ prompt, drain stream-json output, and finally stop the container.
 ## Layout
 
 ```
-agent-server/        Docker image: node + claude-code + server.js (socket wrapper)
+agent-server/        Docker image: node + claude-code + server.js (normalizer)
 activity/
-  agent-start.js     spawn the docker container, wait for the socket
-  agent-send.js      write one user message to the LLM's stdin
-  agent-recv.js      drain stream-json events until the next "result"
-  agent-cleanup.js   shut the server down, docker rm
+  agent-start.js     spawn the docker container, wait for the socket (claude.start)
+  agent-send.js      send one agent-input (prompt | tool-results) (session.send)
+  agent-recv.js      poll the turn; return a typed turn-outcome (session.recv)
+  agent-cleanup.js   shut the server down, docker rm (session.cleanup)
 workflow/
-  agent.js           start -> send(prompt) -> loop(recv until done) -> cleanup
-deployment.toml      FFQNs, types, and lock_expiry per activity
+  agent.js           start -> send(prompt) -> loop(recv until reply) -> cleanup
+deployment.toml      FFQNs, common agent schema, and lock_expiry per activity
 ```
+
+## Common agent schema
+
+Talking to an agent is fully typed and provider-agnostic. The provider-specific
+piece is only the **start** activity (`claude.start`, with `codex.start` etc. to
+come); `session.{send,recv,cleanup}` are shared. The backend's native output is
+normalized **inside the container's `server.js`**, so the workflow and the UI
+never parse LLM JSON.
+
+```
+agent-input  (workflow -> agent)   variant { prompt(string),
+                                             tool-results(list<{name, outcome}>) }
+agent-reply  (agent -> workflow)   variant { final(string),
+                                             tool-calls(list<{name, arguments-json}>) }
+turn-outcome (recv ok)             variant { working, reply(agent-reply) }
+agent-error  (recv err)            variant { permanent-rate-limited({retry-after-seconds, message}),
+                                             permanent-agent-exited(string),
+                                             permanent-error(string),
+                                             transient-error(string),
+                                             execution-failed }
+```
+
+`arguments-json` and `tool-results[].outcome` stay JSON-string-encoded (tool
+args/results are inherently dynamic); everything else is a real variant/record.
 
 ## Why activities are short
 
 The LLM lives inside the docker container as a persistent process; activities
-just speak to it over a socket. `send` writes a single line and returns. `recv`
-polls up to its `timeout-ms` and returns whatever events accumulated, with a
-`done` flag set when claude emits the `result` event. The workflow loops `recv`
-until `done`, so each activity invocation stays well inside its `lock_expiry`
-and Obelisk gets a discrete log entry per turn-chunk.
+just speak to it over a socket. `session.send` renders one `agent-input` line
+and returns. `session.recv` polls up to its `timeout-ms` and returns a
+`turn-outcome`: `working` while the turn is still streaming, or `reply` (the
+parsed `agent-reply`) once claude emits its `result` event. The workflow loops
+`recv` until it gets a `reply`, so each activity invocation stays well inside its
+`lock_expiry` and Obelisk gets a discrete log entry per poll.
 
-## stream-json protocol
+## stream-json protocol (claude backend)
 
-The server (`agent-server/server.js`) spawns:
-
-```
-claude -p \
-  --input-format stream-json \
-  --output-format stream-json \
-  --verbose \
-  --model "$AGENT_MODEL" \
-  --append-system-prompt "$(cat /app/system-prompt.md)" \
-  --json-schema "$(cat /app/output-schema.json)" \
-  --disallowed-tools Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,…
-```
-
-`--json-schema` forces every assistant reply to match the agent envelope
-(`{"final": "..."}` or `{"tool_calls": [...]}`). All built-in tools are
-disabled so claude cannot bypass the envelope. The system prompt explains the
-protocol and lists the available tools.
+`agent-server/server.js` spawns `claude -p --input-format stream-json
+--output-format stream-json --verbose --model "$AGENT_MODEL"
+--append-system-prompt …` and is the **normalizer**: it renders `agent-input`
+into claude user messages, and translates claude's stream-json into the common
+`turn-outcome` / `agent-reply` / `agent-error` shapes (envelope extraction,
+session-limit detection, exit detection all live here). The raw stream-json is
+echoed to each activity's stderr for debugging but never appears in the typed
+return. Adding codex means branching on `AGENT_BACKEND` in `server.js` plus a
+`codex.start` activity. The system prompt still instructs claude to emit the
+`{"final": …}` / `{"tool_calls": […]}` envelope, which `server.js` parses.
 
 ## Agent loop (in the workflow)
 
 The workflow, not claude, is the agent. Each turn:
 
-1. `agent.send` writes the next message (initial prompt, or a JSON
-   `{"tool_results": [...]}` from the previous turn).
-2. `agent.recv` polls until a `result` event arrives.
-3. The workflow parses the latest assistant text as JSON.
-4. If `{"final": "..."}`, return it.
-5. If `{"tool_calls": [...]}`, dispatch each call to its activity and send
-   the aggregated results back as the next message.
+1. `session.send` sends the next `agent-input` (`{prompt}` on the first turn, or
+   `{tool_results}` from the previous turn).
+2. `session.recv` polls until the `turn-outcome` is a `reply`.
+3. If the reply is `final`, return it.
+4. If the reply is `tool-calls`, dispatch each call to its activity and send the
+   aggregated `tool-results` back as the next input.
+
+No JSON parsing happens in the workflow: `server.js` already produced the typed
+`agent-reply`.
+
+## Session limit handling
+
+claude (subscription mode) eventually emits a stream-json `result` event with
+`is_error: true` and `api_error_status: 429`, e.g. `You've hit your session
+limit · resets 3:50pm (UTC)`. `server.js` detects that shape and `session.recv`
+returns the `permanent-rate-limited` arm of `agent-error`, carrying
+`retry-after-seconds` parsed from the reset time (one hour fallback if the time
+cannot be parsed). The `permanent-` prefix tells Obelisk not to retry the
+activity.
+
+The workflow catches that variant, durably `obelisk.sleep`s until the limit
+resets, then re-sends the same input and continues. The sleep is persistent, so
+it survives server restarts. An operator can cancel the sleep (which throws
+inside the workflow); the workflow catches the cancellation and resumes
+immediately instead of failing the run.
 
 Tools exposed to the LLM (each is a real Obelisk activity, fully durable and
 inspectable):
@@ -157,23 +193,29 @@ on whatever port the Obelisk server has configured for webhooks (default
                         result), and the final return value
 
 The detail page reconstructs the conversation from `/v1/executions/<id>/responses`
-by parsing the `events` JSON returned by each `agent.recv` child execution, so
-no extra storage is needed.
+by reading the typed `turn-outcome` returned by each `session.recv` child
+execution (the `reply` outcomes), so no extra storage is needed and no LLM JSON
+is parsed in the UI.
 
 ## Inspecting a run
 
 Each turn is a separate activity execution. Beyond the UI, you can use the
-standard Obelisk WebAPI / CLI to inspect them: `agent.start`, `agent.send`,
-multiple `agent.recv` invocations (one per polling chunk), and
-`agent.cleanup`. The full stream-json event log is captured as the `recv`
-activity results.
+standard Obelisk WebAPI / CLI to inspect them: `claude.start`, `session.send`,
+multiple `session.recv` invocations (one per poll), and `session.cleanup`. The
+typed `agent-reply` per turn is captured as the `recv` activity result; the raw
+stream-json lands on the `recv` activity's stderr.
 
 ## Adding codex
 
-`AGENT_BACKEND=codex` is reserved but not wired up. To add it:
+`AGENT_BACKEND=codex` is reserved but not wired up. The common agent schema is
+the seam: only the start activity and `server.js` are provider-specific. To add
+codex:
 
 1. Install codex in `agent-server/Dockerfile` (`npm i -g @openai/codex`).
-2. Branch on `BACKEND` in `server.js` to use codex's stream-json equivalent
-   (`codex exec --json` flags).
-3. Mount the codex equivalent of `~/.claude` (or pass `OPENAI_API_KEY` if you
-   prefer the API-key path for codex).
+2. Add a `codex.start` activity (or generalize `agent-start.js`) and have the
+   workflow choose it.
+3. Branch on `AGENT_BACKEND` in `server.js`: spawn `codex exec --json`, and
+   translate its native events into the same `turn-outcome` / `agent-reply` /
+   `agent-error` shapes the claude path emits. The workflow and UI need no
+   changes.
+4. Mount the codex equivalent of `~/.claude` (or pass `OPENAI_API_KEY`).

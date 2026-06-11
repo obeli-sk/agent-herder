@@ -104,7 +104,7 @@ async function detailRun(id) {
         result_kind: status?.pending_state?.result_kind ?? null,
         created_at: status?.created_at || "",
         prompt,
-        turns: buildTurns(walk.streamEvents, walk.toolChildren),
+        turns: buildTurns(walk.replies, walk.toolChildren),
         final_result: finalResult,
         pending_asks: pendingAsks,
     };
@@ -159,15 +159,17 @@ async function loadPendingAsks(workflowId) {
 }
 
 // Walk the workflow's responses and split them into:
-//   - streamEvents: claude stream-json events (assistant/user/system/...)
+//   - replies: the typed agent-reply emitted by each completed turn, in order
+//     ({ final } | { tool_calls: [{ name, arguments_json }] })
 //   - toolChildren: per-tool-call child execution records, in dispatch order
-// The workflow's join_set_id encodes the activity it dispatched. We treat
-// `start`, `send`, `recv`, and `cleanup` as infrastructure and everything
-// else as a workflow-visible tool call.
+// The workflow's join_set_id encodes the activity it dispatched (the function
+// name: `start`, `send`, `recv`, `cleanup`). We treat those as infrastructure
+// and everything else as a workflow-visible tool call. The `recv` activity now
+// returns a typed turn-outcome, so there is no LLM JSON left to parse here.
 const INFRA_NAMES = new Set(["start", "send", "recv", "cleanup"]);
 
 async function loadResponses(execId) {
-    const streamEvents = [];
+    const replies = [];
     const toolChildren = [];
     let cursor = 0;
     let including = true;
@@ -186,14 +188,10 @@ async function loadResponses(execId) {
             const joinName = parseJoinName(wrapped.join_set_id);
 
             if (joinName === "recv") {
+                // turn-outcome: "working" (string) or { reply: agent-reply }.
                 const value = ev.result?.ok?.value ?? ev.result?.ok;
-                if (value && typeof value.events === "string") {
-                    let parsed;
-                    try { parsed = JSON.parse(value.events); }
-                    catch (_) { continue; }
-                    if (Array.isArray(parsed)) {
-                        for (const e of parsed) streamEvents.push(e);
-                    }
+                if (value && typeof value === "object" && value.reply) {
+                    replies.push(value.reply);
                 }
             } else if (!INFRA_NAMES.has(joinName)) {
                 toolChildren.push({
@@ -207,7 +205,7 @@ async function loadResponses(execId) {
         cursor = max;
         including = false;
     }
-    return { streamEvents, toolChildren };
+    return { replies, toolChildren };
 }
 
 function parseJoinName(joinSetId) {
@@ -238,30 +236,25 @@ function unwrapTypedResult(result) {
     return null;
 }
 
-// Reduce raw claude events into a clean turn list. We only emit:
+// Build a clean turn list from the typed agent-replies. We emit:
 //   { kind: "tool_calls", calls: [{name, args, child_id?, ok?|err?}] }
 //   { kind: "final", text }
 //
-// Tool calls are paired with the next N entries in `toolChildren` (which
-// were collected from the workflow's response stream in dispatch order).
-// Anything else (system init, rate-limit, stop-hook nags, empty messages,
-// our own injected tool_results user messages) is dropped.
-function buildTurns(events, toolChildren) {
+// Tool calls are paired with the next N entries in `toolChildren` (collected
+// from the workflow's response stream in dispatch order).
+function buildTurns(replies, toolChildren) {
     const turns = [];
     let toolCursor = 0;
-    for (const ev of events) {
-        if (!ev || typeof ev !== "object") continue;
-        if (ev.type !== "assistant") continue;
-        const text = assistantText(ev);
-        const parsed = tryParse(text);
-        if (parsed && typeof parsed.final === "string") {
-            turns.push({ kind: "final", text: parsed.final });
-        } else if (parsed && Array.isArray(parsed.tool_calls)) {
-            const calls = parsed.tool_calls.map((c) => {
+    for (const reply of replies) {
+        if (!reply || typeof reply !== "object") continue;
+        if (typeof reply.final === "string") {
+            turns.push({ kind: "final", text: reply.final });
+        } else if (Array.isArray(reply.tool_calls)) {
+            const calls = reply.tool_calls.map((c) => {
                 const child = toolChildren[toolCursor++];
                 const base = {
                     name: c?.name,
-                    args: c?.args,
+                    args: parseArgs(c?.arguments_json),
                     child_id: child?.id ?? null,
                 };
                 if (child && child.result) {
@@ -276,52 +269,9 @@ function buildTurns(events, toolChildren) {
     return turns;
 }
 
-function assistantText(ev) {
-    const content = ev?.message?.content;
-    if (!Array.isArray(content)) return "";
-    return content
-        .filter((b) => b && b.type === "text" && typeof b.text === "string")
-        .map((b) => b.text)
-        .join("");
-}
-
-function tryParse(text) {
-    if (typeof text !== "string" || !text) return null;
-    const trimmed = text.trim();
-    if (trimmed.startsWith("{")) {
-        try { return JSON.parse(trimmed); } catch (_) {}
-    }
-    // Allow prose preamble, but the envelope must be the trailing content -
-    // otherwise we'd accept envelope-looking substrings inside explanatory
-    // prose (e.g. "Planner emitted {\"final\": \"...\"}").
-    if (!trimmed.endsWith("}")) return null;
-    for (const marker of ['{"final":', '{"tool_calls":']) {
-        const start = trimmed.lastIndexOf(marker);
-        if (start === -1) continue;
-        const end = findMatchingBrace(trimmed, start);
-        if (end === trimmed.length - 1) {
-            try { return JSON.parse(trimmed.substring(start, end + 1)); }
-            catch (_) {}
-        }
-    }
-    return null;
-}
-
-function findMatchingBrace(s, start) {
-    let depth = 0, inStr = false, escape = false;
-    for (let i = start; i < s.length; i += 1) {
-        const c = s[i];
-        if (escape) { escape = false; continue; }
-        if (c === "\\") { escape = true; continue; }
-        if (c === '"') { inStr = !inStr; continue; }
-        if (inStr) continue;
-        if (c === "{") depth += 1;
-        else if (c === "}") {
-            depth -= 1;
-            if (depth === 0) return i;
-        }
-    }
-    return -1;
+function parseArgs(json) {
+    if (typeof json !== "string") return json ?? {};
+    try { return JSON.parse(json); } catch { return json; }
 }
 
 // ----- mutations --------------------------------------------------------
