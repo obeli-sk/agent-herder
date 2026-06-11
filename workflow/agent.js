@@ -133,15 +133,15 @@ function sendAndDrain(socketPath, input) {
     }
 }
 
-// Corrective user message after a reply that didn't parse as the envelope.
+// Corrective user message after a reply whose tool-call JSON didn't parse.
 function correctionPrompt(detail) {
     return [
-        "Your previous reply could not be parsed as the required envelope.",
+        "Your previous reply looked like it requested tools but the JSON could",
+        "not be parsed.",
         `Parse error: ${detail}`,
-        "Reply with ONLY a single JSON object and nothing else: no markdown code",
-        "fences, no prose before or after. It must be either",
-        '{"final": "<answer>"} or',
-        '{"tool_calls": [{"name": "<tool>", "args": { ... }}]}.',
+        'To call tools, include a valid JSON object {"tool_calls": [{"name":',
+        '"<tool>", "args": { ... }}]} (a ```json block is fine). If you are not',
+        "calling tools, just reply with your final answer as plain text.",
     ].join(" ");
 }
 

@@ -123,39 +123,73 @@ function renderUserText(input) {
   return null;
 }
 
-// Map a parsed envelope to the common agent-reply shape:
-//   { final: string } | { tool_calls: [{ name, arguments_json }] }, or null.
-function envToReply(env) {
-  if (!env) return null;
-  if (typeof env.final === "string") return { final: env.final };
-  if (Array.isArray(env.tool_calls)) {
-    return {
-      tool_calls: env.tool_calls.map((c) => ({
-        name: c && typeof c.name === "string" ? c.name : "",
-        arguments_json: JSON.stringify(c && typeof c.args === "object" && c.args !== null ? c.args : {}),
-      })),
-    };
-  }
-  return null;
-}
-
-// The model occasionally writes a prose preamble before the JSON envelope. We
-// accept that, but only if the envelope is the trailing content, to avoid
-// treating `{"final": ...}` quoted inside explanatory prose as the reply.
-function extractEnvelope(text) {
+// Parse a turn's final assistant text into the common agent-reply shape:
+//   { tool_calls: [{ name, arguments_json }] } | { final: string }, or null.
+//
+// The model is free to think and narrate; we only fish the structured intent
+// out of its prose:
+//   - any {"tool_calls":[...]} object (bare or fenced, one or several) becomes
+//     a single ordered tool_calls batch;
+//   - otherwise the message *is* the final answer (prose), unwrapping a clean
+//     {"final":"..."} envelope if that is all the model sent;
+//   - null is returned only when the model clearly attempted a tool_calls
+//     envelope we could not parse, so the workflow can re-prompt.
+function extractReply(text) {
   const trimmed = (text || "").trim();
-  if (trimmed.startsWith("{")) {
-    try { return JSON.parse(trimmed); } catch (_) {}
-  }
-  if (!trimmed.endsWith("}")) return null;
-  for (const marker of ['{"final":', '{"tool_calls":']) {
-    const startIdx = trimmed.lastIndexOf(marker);
-    if (startIdx === -1) continue;
-    const endIdx = findMatchingBrace(trimmed, startIdx);
-    if (endIdx === trimmed.length - 1) {
-      try { return JSON.parse(trimmed.substring(startIdx, endIdx + 1)); } catch (_) {}
+  if (!trimmed) return null;
+
+  const calls = [];
+  for (const obj of scanJsonObjects(trimmed)) {
+    if (Array.isArray(obj.tool_calls)) {
+      for (const c of obj.tool_calls) {
+        calls.push({
+          name: c && typeof c.name === "string" ? c.name : "",
+          arguments_json: JSON.stringify(c && typeof c.args === "object" && c.args !== null ? c.args : {}),
+        });
+      }
     }
   }
+  if (calls.length > 0) return { tool_calls: calls };
+
+  // A tool-call was intended but did not parse: signal malformed so we re-prompt.
+  if (/"tool_calls"\s*:/.test(trimmed)) return null;
+
+  // Final answer: unwrap a clean {"final":"..."} envelope, else use prose as-is.
+  const unwrapped = unwrapFinal(trimmed);
+  return { final: unwrapped !== null ? unwrapped : trimmed };
+}
+
+// Every balanced top-level {...} JSON object in `text`, parsed, in order.
+// Fences and surrounding prose are ignored: we scan for `{` and try to parse
+// the balanced region. Objects that fail to parse are skipped.
+function scanJsonObjects(text) {
+  const objs = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== "{") { i += 1; continue; }
+    const end = findMatchingBrace(text, i);
+    if (end === -1) break;
+    try {
+      const obj = JSON.parse(text.slice(i, end + 1));
+      if (obj && typeof obj === "object") objs.push(obj);
+    } catch (_) {}
+    i = end + 1;
+  }
+  return objs;
+}
+
+// If the whole message is exactly a {"final":"..."} envelope (optionally wrapped
+// in one ```...``` fence), return the string; otherwise null (treat as prose).
+function unwrapFinal(text) {
+  let body = text.trim();
+  const fence = body.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/);
+  if (fence) body = fence[1].trim();
+  try {
+    const obj = JSON.parse(body);
+    if (obj && typeof obj === "object" && typeof obj.final === "string" && !Array.isArray(obj.tool_calls)) {
+      return obj.final;
+    }
+  } catch (_) {}
   return null;
 }
 
@@ -278,7 +312,7 @@ function makeClaudeBackend() {
         return { kind: "rate_limited", rate_limit: { retry_after_seconds: secondsUntilReset(message), message } };
       }
       const text = typeof termEv.result === "string" && termEv.result ? termEv.result : lastAssistantText(turnSlice);
-      const reply = envToReply(extractEnvelope(text));
+      const reply = extractReply(text);
       if (!reply) return { kind: "malformed", error: `reply did not match envelope: ${text.slice(0, 500)}` };
       return { kind: "reply", reply };
     },
@@ -370,7 +404,7 @@ function makeCodexBackend() {
         return { kind: "error", error: message };
       }
       const text = lastCodexAgentMessage(turnSlice);
-      const reply = envToReply(extractEnvelope(text));
+      const reply = extractReply(text);
       if (!reply) return { kind: "malformed", error: `reply did not match envelope: ${(text || "").slice(0, 500)}` };
       return { kind: "reply", reply };
     },
