@@ -233,6 +233,22 @@ pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 
 [[activity_js]]
+name = "tool_get_component_source"
+ffqn = "obelisk-agent:tools/webapi.get-component-source"
+params = [
+  { name = "deployment-id", type = "string" },
+  { name = "kind", type = "string" },
+  { name = "id", type = "string" },
+  { name = "offset", type = "u32" },
+  { name = "length", type = "u32" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/get-component-source.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+
+[[activity_js]]
 name = "tool_current_deployment"
 ffqn = "obelisk-agent:tools/webapi.current-deployment-id"
 return_type = "result<string, string>"

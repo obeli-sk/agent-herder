@@ -10,7 +10,6 @@ const RECV_TIMEOUT_MS = 30000;
 const MAX_TURNS = 30;          // hard cap on agent loop turns
 const MAX_CORRECTIONS = 3;     // re-prompts allowed per turn for a malformed reply
 const MAX_TOOL_RESULT_BYTES = 96 * 1024;  // encoded-size cap per tool_result (argv-safe)
-const MAX_SOURCE_PAGE_BYTES = 32 * 1024;  // max source chars per get_component_source page
 
 // Provider-specific start activities; session.{send,recv,cleanup} are shared.
 const STARTERS = { claude: claude.start, codex: codex.start };
@@ -259,9 +258,18 @@ function dispatch(call, draft) {
                     (args.length | 0) || 20,
                 ));
             case "obelisk.get_deployment":
-                return getDeploymentCompact(name, args);
+                // Sources are stripped server-side, so the child execution result
+                // is the compact record the model receives (not the full config).
+                return ok(name, webapi.getDeployment(requireString(args.deployment_id, "deployment_id")));
             case "obelisk.get_component_source":
-                return getComponentSource(name, args);
+                // Sliced server-side so the child result is just the requested page.
+                return ok(name, webapi.getComponentSource(
+                    requireString(args.deployment_id, "deployment_id"),
+                    requireString(args.kind, "kind"),
+                    requireString(args.id, "id"),
+                    args.offset | 0,
+                    args.length | 0,
+                ));
             case "obelisk.current_deployment_id":
                 return ok(name, webapi.currentDeploymentId());
             case "obelisk.create_deployment":
@@ -549,76 +557,6 @@ function paginationDirection(value) {
 function requireArray(value, field) {
     if (!Array.isArray(value)) throw `deployment config has no ${field} array`;
     return value;
-}
-
-// get_deployment without the bulky inline sources: each component's
-// `location.content.content` is replaced by { file_name, source_bytes }, so the
-// record stays small enough to ride back through session.send. The model reads
-// structure here, then pulls individual sources via get_component_source.
-function getDeploymentCompact(name, args) {
-    const deploymentId = requireString(args.deployment_id, "deployment_id");
-    const record = JSON.parse(webapi.getDeployment(deploymentId));
-    if (typeof record.config_json === "string") {
-        const config = JSON.parse(record.config_json);
-        stripSources(config);
-        record.config_json = JSON.stringify(config);
-    }
-    return ok(name, JSON.stringify(record));
-}
-
-function stripSources(config) {
-    for (const key of Object.keys(config)) {
-        const list = config[key];
-        if (!Array.isArray(list)) continue;
-        for (const item of list) {
-            const content = item && item.location && item.location.content;
-            if (content && typeof content.content === "string") {
-                item.location.content = { file_name: content.file_name, source_bytes: content.content.length };
-            }
-        }
-    }
-}
-
-// One component's source, paginated by character offset. Returns
-// { kind, id, file_name, source_bytes, offset, length, next_offset, source };
-// call again with offset = next_offset (non-null) for the next page.
-function getComponentSource(name, args) {
-    const deploymentId = requireString(args.deployment_id, "deployment_id");
-    const kind = requireString(args.kind, "kind");
-    const id = requireString(args.id, "id");
-    const spec = {
-        js_activity: { key: "activities_js", matches: (item) => item?.ffqn === id },
-        js_workflow: { key: "workflows_js", matches: (item) => item?.ffqn === id },
-        js_webhook: { key: "webhooks_js", matches: (item) => item?.name === id },
-    }[kind];
-    if (!spec) throw "kind must be js_activity, js_workflow, or js_webhook";
-    const config = JSON.parse(JSON.parse(webapi.getDeployment(deploymentId)).config_json);
-    const list = Array.isArray(config[spec.key]) ? config[spec.key] : [];
-    const item = list.find(spec.matches);
-    if (!item) throw `no ${kind} with id ${id} in ${deploymentId}`;
-    const content = item.location && item.location.content && item.location.content.content;
-    if (typeof content !== "string") throw `${kind} ${id} has no inline source`;
-    const total = content.length;
-    let offset = args.offset | 0;
-    if (offset < 0) offset = 0;
-    if (offset > total) offset = total;
-    let length = (args.length | 0) || MAX_SOURCE_PAGE_BYTES;
-    if (length < 0) length = 0;
-    if (length > MAX_SOURCE_PAGE_BYTES) length = MAX_SOURCE_PAGE_BYTES;
-    const slice = content.slice(offset, offset + length);
-    const nextOffset = offset + slice.length;
-    return ok(name, JSON.stringify({
-        kind,
-        id,
-        file_name: item.location.content.file_name,
-        source_bytes: total,
-        offset,
-        length: slice.length,
-        next_offset: nextOffset < total ? nextOffset : null,
-        // raw_body is emitted verbatim to the model (nonce-fenced) by
-        // server.js renderUserText, not JSON-escaped into the envelope.
-        raw_body: slice,
-    }));
 }
 
 function componentCounts(config) {
