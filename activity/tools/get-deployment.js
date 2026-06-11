@@ -1,0 +1,12 @@
+// obelisk-agent:tools/webapi.get-deployment:
+//   func(deployment-id: string) -> result<string, string>
+export default async function get_deployment(deploymentId) {
+    if (!deploymentId) throw "deployment-id is required";
+    const base = process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005";
+    const resp = await fetch(
+        `${base}/v1/deployments/${encodeURIComponent(deploymentId)}`,
+        { headers: { accept: "application/json" } },
+    );
+    if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
+    return await resp.text();
+}

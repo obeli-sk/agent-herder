@@ -1,0 +1,17 @@
+FROM node:22-bookworm-slim
+
+WORKDIR /app
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG CLAUDE_CODE_VERSION=latest
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+COPY package.json ./
+COPY server.js entrypoint.sh system-prompt.md ./
+RUN chmod +x /app/entrypoint.sh
+
+ENV HOME=/tmp
+ENTRYPOINT ["/app/entrypoint.sh"]

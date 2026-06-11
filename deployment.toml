@@ -1,0 +1,213 @@
+[[activity_exec]]
+ffqn = "obelisk-agent:agent/agent.start"
+params = [
+  { name = "container-name", type = "string" },
+  { name = "socket", type = "string" },
+]
+return_type = "result<record { container: string, image: string, socket: string, id: string }, string>"
+location = "${DEPLOYMENT_DIR}/activity/agent-start.js"
+exec.lock_expiry.minutes = 2
+max_retries = 1
+env_vars = [
+  "PATH",
+  "HOME",
+  { key = "AGENT_IMAGE",            value = "${AGENT_IMAGE:-ghcr.io/obeli-sk/obelisk-agent-server:latest}" },
+  { key = "AGENT_BACKEND",          value = "${AGENT_BACKEND:-claude}" },
+  { key = "AGENT_MODEL",            value = "${AGENT_MODEL:-claude-opus-4-7}" },
+  { key = "AGENT_EXTRA_ARGS",       value = "${AGENT_EXTRA_ARGS:-}" },
+  { key = "AGENT_HOST_CLAUDE_DIR",  value = "${AGENT_HOST_CLAUDE_DIR:-${HOME}/.claude}" },
+]
+
+[[activity_exec]]
+ffqn = "obelisk-agent:agent/agent.send"
+params = [
+  { name = "socket", type = "string" },
+  { name = "message", type = "string" },
+]
+return_type = "result<_, string>"
+location = "${DEPLOYMENT_DIR}/activity/agent-send.js"
+exec.lock_expiry.seconds = 30
+max_retries = 3
+env_vars = ["PATH"]
+
+[[activity_exec]]
+ffqn = "obelisk-agent:agent/agent.recv"
+params = [
+  { name = "socket", type = "string" },
+  { name = "timeout-ms", type = "u32" },
+]
+return_type = "result<record { events: string, done: bool, exited: bool }, string>"
+location = "${DEPLOYMENT_DIR}/activity/agent-recv.js"
+exec.lock_expiry.minutes = 2
+max_output_bytes = 1048576   # 1 MiB; default 4 KiB overflows on bigger claude responses (e.g. summaries of get_deployment output)
+max_retries = 3
+env_vars = ["PATH"]
+
+[[activity_exec]]
+ffqn = "obelisk-agent:agent/agent.cleanup"
+params = [
+  { name = "container-name", type = "string" },
+  { name = "socket", type = "string" },
+]
+return_type = "result<_, string>"
+location = "${DEPLOYMENT_DIR}/activity/agent-cleanup.js"
+exec.lock_expiry.seconds = 30
+max_retries = 3
+env_vars = ["PATH"]
+
+# --- LLM-facing tools ---------------------------------------------------------
+
+[[activity_js]]
+name = "tool_list_executions"
+ffqn = "obelisk-agent:tools/webapi.list-executions"
+params = [
+  { name = "ffqn-prefix", type = "string" },
+  { name = "length", type = "u32" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/list-executions.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+
+[[activity_js]]
+name = "tool_get_execution"
+ffqn = "obelisk-agent:tools/webapi.get-execution"
+params = [
+  { name = "execution-id", type = "string" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/get-execution.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+
+[[activity_js]]
+name = "tool_get_logs"
+ffqn = "obelisk-agent:tools/webapi.get-logs"
+params = [
+  { name = "execution-id", type = "string" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/get-logs.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+
+[[activity_js]]
+name = "tool_submit"
+ffqn = "obelisk-agent:tools/webapi.submit-json"
+params = [
+  { name = "ffqn", type = "string" },
+  { name = "params-json", type = "string" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/submit.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["POST"]
+
+[[activity_js]]
+name = "tool_get_result"
+ffqn = "obelisk-agent:tools/webapi.get-result-json"
+params = [
+  { name = "execution-id", type = "string" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/get-result.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+
+[[activity_js]]
+name = "tool_list_deployments"
+ffqn = "obelisk-agent:tools/webapi.list-deployments"
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/list-deployments.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+
+[[activity_js]]
+name = "tool_get_deployment"
+ffqn = "obelisk-agent:tools/webapi.get-deployment"
+params = [
+  { name = "deployment-id", type = "string" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/get-deployment.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+
+[[activity_js]]
+name = "tool_current_deployment"
+ffqn = "obelisk-agent:tools/webapi.current-deployment-id"
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/current-deployment.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+
+[[activity_js]]
+name = "tool_create_deployment"
+ffqn = "obelisk-agent:tools/webapi.create-deployment"
+params = [
+  { name = "config-json", type = "string" },
+  { name = "verify", type = "bool" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/create-deployment.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["POST"]
+
+[[activity_js]]
+name = "tool_apply_deployment"
+ffqn = "obelisk-agent:tools/webapi.apply-deployment"
+params = [
+  { name = "deployment-id", type = "string" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/apply-deployment.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["PUT"]
+
+# --- Stub activity: human-in-the-loop -----------------------------------------
+
+[[activity_stub]]
+name = "tool_ask_user"
+ffqn = "obelisk-agent:tools/input.ask-user"
+params = [
+  { name = "question", type = "string" },
+]
+return_type = "result<string, string>"
+
+# --- Workflow -----------------------------------------------------------------
+
+[[workflow_js]]
+ffqn = "obelisk-agent:workflow/workflow.run"
+params = [
+  { name = "prompt", type = "string" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/workflow/agent.js"
+
+[[webhook_endpoint_js]]
+name = "ui"
+location = "${DEPLOYMENT_DIR}/webhook/ui.js"
+routes = [
+  { methods = ["GET"], route = "/" },
+  { methods = ["GET"], route = "/api/runs" },
+  { methods = ["GET"], route = "/api/runs/:execution-id" },
+  { methods = ["POST"], route = "/api/submit" },
+  { methods = ["POST"], route = "/api/answer/:child-id" },
+]
+env_vars = [
+  { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://localhost:8080}" },
+]
+[[webhook_endpoint_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
