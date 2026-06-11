@@ -12,6 +12,7 @@
 //          }) },
 //          variant {
 //            permanent-rate-limited(record { retry-after-seconds: u32, message: string }),
+//            permanent-malformed-reply(string),
 //            permanent-agent-exited(string),
 //            permanent-error(string),
 //            transient-error(string),
@@ -98,6 +99,11 @@ async function main() {
       }
       case "exited":
         return emitErr({ permanent_agent_exited: response.error || "agent exited" }, response.error || "agent exited");
+      case "malformed":
+        // Reply didn't parse as the envelope. Permanent (no activity retry: the
+        // buffered turn text is fixed), but recoverable by the workflow, which
+        // re-prompts the agent to re-emit a valid envelope.
+        return emitErr({ permanent_malformed_reply: response.error || "reply did not match envelope" }, response.error || "malformed reply");
       case "error":
         return emitErr({ permanent_error: response.error || "reply error" }, response.error || "reply error");
       default:

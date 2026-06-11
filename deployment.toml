@@ -80,7 +80,7 @@ params = [
   { name = "socket", type = "string" },
   { name = "timeout-ms", type = "u32" },
 ]
-return_type = "result<variant { working, reply(variant { final(string), tool-calls(list<record { name: string, arguments-json: string }>) }) }, variant { permanent-rate-limited(record { retry-after-seconds: u32, message: string }), permanent-agent-exited(string), permanent-error(string), transient-error(string), execution-failed }>"
+return_type = "result<variant { working, reply(variant { final(string), tool-calls(list<record { name: string, arguments-json: string }>) }) }, variant { permanent-rate-limited(record { retry-after-seconds: u32, message: string }), permanent-malformed-reply(string), permanent-agent-exited(string), permanent-error(string), transient-error(string), execution-failed }>"
 location = "${DEPLOYMENT_DIR}/activity/agent-recv.js"
 exec.lock_expiry.hours = 1
 max_output_bytes = 1048576   # 1 MiB; default 4 KiB overflows on bigger claude replies

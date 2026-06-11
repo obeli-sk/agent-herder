@@ -8,6 +8,7 @@ import * as deploy from "obelisk-agent:tools/deploy";
 
 const RECV_TIMEOUT_MS = 30000;
 const MAX_TURNS = 30;          // hard cap on agent loop turns
+const MAX_CORRECTIONS = 3;     // re-prompts allowed per turn for a malformed reply
 
 // Provider-specific start activities; session.{send,recv,cleanup} are shared.
 const STARTERS = { claude: claude.start, codex: codex.start };
@@ -92,29 +93,56 @@ export default function run(prompt, backend) {
 }
 
 // Send one agent-input and drain the turn into a typed agent-reply
-// ({ final } | { tool_calls }). If recv reports a session/usage limit
-// (permanent-rate-limited), durably sleep until the limit resets, then re-send
-// the same input and try again. A cancelled sleep throws; we catch it and
-// resume immediately rather than failing the run.
+// ({ final } | { tool_calls }). Two recoverable agent-errors are handled here:
+//   - permanent-rate-limited: durably sleep until the limit resets, then re-send
+//     the same input. A cancelled sleep throws; we catch it and resume now.
+//   - permanent-malformed-reply: the agent's reply didn't parse as the envelope.
+//     Re-prompt it (up to MAX_CORRECTIONS) to re-emit a bare JSON envelope.
+// Both arms are `permanent-` so Obelisk never auto-retries the recv activity;
+// recovery is the workflow's job because it requires another send.
 function sendAndDrain(socketPath, input) {
+    let pending = input;
+    let corrections = 0;
     while (true) {
-        session.send(socketPath, input);
+        session.send(socketPath, pending);
         try {
             return drainTurn(socketPath);
         } catch (error) {
             const limit = rateLimited(error);
-            if (!limit) throw error;
-            const seconds = limit.retry_after_seconds > 0 ? limit.retry_after_seconds : 1;
-            console.log(`session limit reached (${limit.message}); sleeping ${seconds}s until reset`);
-            try {
-                obelisk.sleep({ seconds }, "rate-limit");
-                console.log("rate-limit sleep elapsed; retrying turn");
-            } catch (cancelled) {
-                console.log(`rate-limit sleep cancelled (${String(cancelled)}); resuming now`);
+            if (limit) {
+                const seconds = limit.retry_after_seconds > 0 ? limit.retry_after_seconds : 1;
+                console.log(`session limit reached (${limit.message}); sleeping ${seconds}s until reset`);
+                try {
+                    obelisk.sleep({ seconds }, "rate-limit");
+                    console.log("rate-limit sleep elapsed; retrying turn");
+                } catch (cancelled) {
+                    console.log(`rate-limit sleep cancelled (${String(cancelled)}); resuming now`);
+                }
+                // Loop: re-send the same input now that the limit should be lifted.
+                continue;
             }
-            // Loop: re-send the same input now that the limit should be lifted.
+            const malformed = malformedReply(error);
+            if (malformed && corrections < MAX_CORRECTIONS) {
+                corrections += 1;
+                console.log(`malformed reply (correction ${corrections}/${MAX_CORRECTIONS}): ${malformed}`);
+                pending = { prompt: correctionPrompt(malformed) };
+                continue;
+            }
+            throw error;
         }
     }
+}
+
+// Corrective user message after a reply that didn't parse as the envelope.
+function correctionPrompt(detail) {
+    return [
+        "Your previous reply could not be parsed as the required envelope.",
+        `Parse error: ${detail}`,
+        "Reply with ONLY a single JSON object and nothing else: no markdown code",
+        "fences, no prose before or after. It must be either",
+        '{"final": "<answer>"} or',
+        '{"tool_calls": [{"name": "<tool>", "args": { ... }}]}.',
+    ].join(" ");
 }
 
 // recv stays alive for the whole turn and returns { reply: agent-reply } once
@@ -133,6 +161,15 @@ function rateLimited(error) {
     if (error && typeof error === "object" &&
         error.permanent_rate_limited && typeof error.permanent_rate_limited === "object") {
         return error.permanent_rate_limited;
+    }
+    return null;
+}
+
+// The recv activity throws the permanent-malformed-reply variant payload as
+// { permanent_malformed_reply: "<parse error>" }.
+function malformedReply(error) {
+    if (error && typeof error === "object" && typeof error.permanent_malformed_reply === "string") {
+        return error.permanent_malformed_reply;
     }
     return null;
 }

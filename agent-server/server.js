@@ -27,7 +27,9 @@
 //        "reply",      reply: {final}|{tool_calls}  turn complete, parsed reply
 //        "rate_limited", rate_limit: {retry_after_seconds, message}
 //        "exited",     error: string                backend died mid-turn
-//        "error",      error: string                reply did not match envelope
+//        "malformed",  error: string                reply did not match envelope
+//                                                    (recoverable: workflow re-prompts)
+//        "error",      error: string                backend reported a turn failure
 //      "raw" carries the native events seen since the last poll, for the
 //      activity to echo to its stderr (debugging only; not in the typed return).
 //
@@ -277,7 +279,7 @@ function makeClaudeBackend() {
       }
       const text = typeof termEv.result === "string" && termEv.result ? termEv.result : lastAssistantText(turnSlice);
       const reply = envToReply(extractEnvelope(text));
-      if (!reply) return { kind: "error", error: `reply did not match envelope: ${text.slice(0, 500)}` };
+      if (!reply) return { kind: "malformed", error: `reply did not match envelope: ${text.slice(0, 500)}` };
       return { kind: "reply", reply };
     },
     isFatallyExited() { return exited; },
@@ -369,7 +371,7 @@ function makeCodexBackend() {
       }
       const text = lastCodexAgentMessage(turnSlice);
       const reply = envToReply(extractEnvelope(text));
-      if (!reply) return { kind: "error", error: `reply did not match envelope: ${(text || "").slice(0, 500)}` };
+      if (!reply) return { kind: "malformed", error: `reply did not match envelope: ${(text || "").slice(0, 500)}` };
       return { kind: "reply", reply };
     },
     // Per-turn process exits are normal; only an unterminated turn is fatal, and
@@ -430,6 +432,7 @@ async function opRecv({ timeout_ms }) {
     turnStart = idx + 1; // next turn parses from a fresh window
     const c = backend.classify(turnSlice, termEv);
     if (c.kind === "rate_limited") return { ok: true, outcome: "rate_limited", rate_limit: c.rate_limit, raw };
+    if (c.kind === "malformed") return { ok: true, outcome: "malformed", error: c.error, raw };
     if (c.kind === "error") return { ok: true, outcome: "error", error: c.error, raw };
     return { ok: true, outcome: "reply", reply: c.reply, raw };
   }
