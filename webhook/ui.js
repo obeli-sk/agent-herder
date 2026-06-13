@@ -985,13 +985,12 @@ const SHELL_HTML = `<!doctype html>
   .bubble.error { background: var(--err-bg); border: 1px solid #e5b8b8; color: var(--err); }
   .bubble.thinking { background: #faf7ff; border: 1px solid #e0d6f0; color: #4a4458; }
   .bubble.thinking .label { color: #7a5ea8; }
-  .bubble.thinking pre { font-style: italic; }
   .bubble pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
   .bubble.markdown { background: var(--panel); border: 1px solid var(--line); }
-  .bubble.markdown > :first-child { margin-top: 0; }
-  .bubble.markdown > :last-child { margin-bottom: 0; }
-  .bubble.markdown pre { padding: 0.6em; background: #f7f7f7; border-radius: 4px; overflow-x: auto; font: 12px/1.45 ui-monospace, monospace; }
-  .bubble.markdown code { font-family: ui-monospace, monospace; }
+  .rendered-markdown > :first-child { margin-top: 0; }
+  .rendered-markdown > :last-child { margin-bottom: 0; }
+  .rendered-markdown pre { padding: 0.6em; background: #f7f7f7; border-radius: 4px; overflow-x: auto; font: 12px/1.45 ui-monospace, monospace; }
+  .rendered-markdown code { font-family: ui-monospace, monospace; }
   .bubble.mermaid-block { max-width: 960px; overflow-x: auto; background: white; border: 1px solid var(--line); }
   .bubble.mermaid-block svg { max-width: 100%; height: auto; }
   .bubble.mermaid-block .render-error { color: var(--err); white-space: pre-wrap; }
@@ -1469,18 +1468,19 @@ function displayBlocksHtml(blocks) {
   return (blocks || []).map((block) => {
     const source = encodeURIComponent(block.content || '');
     if (block.kind === 'thinking') {
-      return '<div class="bubble thinking"><div class="label">thinking</div><pre>' + esc(block.content) + '</pre></div>';
+      return '<div class="bubble thinking"><div class="label">thinking</div>'
+        + '<div class="rendered-markdown" data-source="' + esc(source) + '"></div></div>';
     }
     if (block.kind === 'mermaid') {
       return '<div class="bubble mermaid-block"><div class="label">diagram</div>'
         + '<div class="mermaid-source" data-source="' + esc(source) + '"></div></div>';
     }
-    return '<div class="bubble markdown" data-source="' + esc(source) + '"></div>';
+    return '<div class="bubble markdown rendered-markdown" data-source="' + esc(source) + '"></div>';
   }).join('');
 }
 
 function hydrateDisplayBlocks(root) {
-  for (const el of root.querySelectorAll('.bubble.markdown[data-source]')) {
+  for (const el of root.querySelectorAll('.rendered-markdown[data-source]')) {
     const source = decodeURIComponent(el.dataset.source || '');
     if (window.marked && window.DOMPurify) {
       el.innerHTML = window.DOMPurify.sanitize(window.marked.parse(source));
