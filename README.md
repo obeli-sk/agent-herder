@@ -118,9 +118,12 @@ inspectable):
 Execution and deployment list tools expose the REST API pagination cursors.
 `obelisk.get_logs` also supports nested executions, log/stream filters, and
 cursor pagination. `obelisk.get_deployment` returns the complete compact
-deployment when it fits; oversized deployments are trimmed by config component
-array and include continuation offsets. A specific array can be requested with
-`component_type`, `offset`, and `length`.
+deployment when it fits, with `config` as structured JSON and embedded source
+bodies removed. WASM `frame_files_to_sources` maps are omitted; raw deployment
+creation restores the canonical empty maps, while source records for unchanged
+component digests remain stored. Oversized deployments are trimmed by config
+component array and include continuation offsets. A specific array can be
+requested with `component_type`, `offset`, and `length`.
 
 `input.ask_user` is configured as `activity_stub`: it parks the workflow and
 waits for an operator to PUT a response. The web UI surfaces pending asks on

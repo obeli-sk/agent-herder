@@ -145,8 +145,11 @@ obelisk.get_deployment
     "length"?: number,
     "max_bytes"?: number
   }
-  Returns the complete compact deployment when it fits. Component source bodies
-  are replaced by { file_name, source_bytes }. If entries must be omitted,
+  Returns the complete compact deployment when it fits, with config as a JSON
+  object rather than an encoded config_json string. JS source bodies are
+  replaced by source byte-count metadata; WASM frame_files_to_sources maps are
+  omitted because stored backtrace sources are scoped to the component digest.
+  If entries must be omitted,
   pagination.components reports returned, trimmed, and next_offset for each
   config component array. Continue with that component_type and next_offset.
 
@@ -173,6 +176,8 @@ obelisk.create_deployment
   }
   Submits a complete canonical config as a new inactive deployment. This is an
   advanced escape hatch; use a deployment edit transaction for normal changes.
+  Omitted WASM frame_files_to_sources maps are restored as empty maps before
+  submission; existing sources for an unchanged component digest remain stored.
 
 ## Deployment edit transaction
 

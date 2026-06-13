@@ -3,10 +3,11 @@
 //        offset: option<u32>, length: option<u32>,
 //        max-bytes: option<u32>) -> result<string, string>
 //
-// Returns the deployment record with component sources stripped: each
-// `location.content.content` becomes { file_name, source_bytes }. Stripping
+// Returns the deployment record with config_json decoded to `config` and
+// component sources stripped. JS source bodies are replaced by source_bytes
+// metadata, while WASM backtrace source maps are omitted entirely. Stripping
 // happens here (not in the workflow) so the durable child-execution result and
-// the UI show exactly the compact record the model receives. Fetch full sources
+// the UI show exactly the compact record the model receives. Fetch JS sources
 // with webapi.get-component-source.
 //
 // Without a component selector, the complete record is returned when it fits.
@@ -26,14 +27,13 @@ export default async function get_deployment(deploymentId, componentType, offset
     const record = JSON.parse(await resp.text());
     if (typeof record.config_json === "string") {
         const config = JSON.parse(record.config_json);
+        delete record.config_json;
+        record.config = config;
         const componentTypes = Object.keys(config).filter((key) => Array.isArray(config[key]));
         for (const key of componentTypes) {
             const list = config[key];
             for (const item of list) {
-                const content = item && item.location && item.location.content;
-                if (content && typeof content.content === "string") {
-                    item.location.content = { file_name: content.file_name, source_bytes: content.content.length };
-                }
+                stripSources(item);
             }
         }
 
@@ -52,7 +52,6 @@ export default async function get_deployment(deploymentId, componentType, offset
         }
 
         if (!explicitPage) {
-            record.config_json = JSON.stringify(config);
             if (encodedBytes(record) <= budget) return JSON.stringify(record);
         } else {
             const off = clampOffset(offset, config[selectedType].length);
@@ -72,6 +71,24 @@ export default async function get_deployment(deploymentId, componentType, offset
     return JSON.stringify(record);
 }
 
+function stripSources(item) {
+    const content = item && item.location && item.location.content;
+    if (content && typeof content.content === "string") {
+        item.location.content = {
+            file_name: content.file_name,
+            source_bytes: content.content.length,
+        };
+    }
+    if (item && typeof item.content === "string") {
+        item.content = { source_bytes: item.content.length };
+    }
+
+    const sources = item && item.backtrace && item.backtrace.frame_files_to_sources;
+    if (sources && typeof sources === "object" && !Array.isArray(sources)) {
+        delete item.backtrace.frame_files_to_sources;
+    }
+}
+
 function fitRecord(record, config, componentTypes, offsets, originalCounts, budget, selectedType) {
     while (true) {
         const components = {};
@@ -89,7 +106,6 @@ function fitRecord(record, config, componentTypes, offsets, originalCounts, budg
                 next_offset: trimmed > 0 ? offsets[key] + returned : null,
             };
         }
-        record.config_json = JSON.stringify(config);
         record.pagination = {
             component_type: selectedType || null,
             max_bytes: budget,

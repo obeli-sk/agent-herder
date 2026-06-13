@@ -237,8 +237,8 @@ function dispatch(call, draft) {
                     (args.length | 0) || 20,
                 ));
             case "obelisk.get_deployment":
-                // Sources are stripped server-side, so the child execution result
-                // is the compact record the model receives (not the full config).
+                // Sources are stripped and config_json is decoded server-side, so
+                // the child result is the compact record the model receives.
                 return ok(name, webapi.getDeployment(
                     requireString(args.deployment_id, "deployment_id"),
                     optionalString(args.component_type),
