@@ -33,12 +33,16 @@ export default async function handle(request) {
         if (method === "GET" && path.startsWith("/api/runs/")) {
             const id = decodeURIComponent(path.substring("/api/runs/".length));
             if (!id) return jsonError(400, "missing run id");
-            return jsonResponse(await detailRun(id));
+            return jsonResponse(await detailRun(id, {
+                agentLoopId: url.searchParams.get("agent_loop_id") || "",
+                responseCursor: nonNegativeInteger(url.searchParams.get("response_cursor")),
+                historyVersion: nonNegativeInteger(url.searchParams.get("history_version")),
+            }));
         }
         if (method === "GET" && path.startsWith("/api/logs/")) {
             const id = decodeURIComponent(path.substring("/api/logs/".length));
             if (!id) return jsonError(400, "missing run id");
-            return jsonResponse(await loadExecutionTreeLogs(id));
+            return jsonResponse(await loadExecutionTreeLogs(id, url.searchParams.get("cursor") || ""));
         }
         if (method === "POST" && path === "/api/submit") return await submit(request);
         if (method === "POST" && path.startsWith("/api/pause/")) {
@@ -98,6 +102,11 @@ function jsonError(status, message) {
     return jsonResponse({ error: message }, status);
 }
 
+function nonNegativeInteger(value) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
 // ----- list -------------------------------------------------------------
 
 async function listRuns() {
@@ -122,13 +131,16 @@ async function loadPromptPreview(execId) {
 
 // ----- detail -----------------------------------------------------------
 
-async function detailRun(id) {
+async function detailRun(id, cursorState) {
     const agentLoopId = await loadAgentLoopExecution(id);
-    const [status, created, walk, sentResults, finalResult, pendingAsks, pendingConfirms, pendingInjection, teardownSignalId] = await Promise.all([
+    const resetTranscript = !agentLoopId || cursorState.agentLoopId !== agentLoopId;
+    const responseCursor = resetTranscript ? 0 : cursorState.responseCursor;
+    const historyVersion = resetTranscript ? 0 : cursorState.historyVersion;
+    const [status, created, walk, sent, finalResult, pendingAsks, pendingConfirms, pendingInjection, teardownSignalId] = await Promise.all([
         loadStatus(id),
         loadCreated(id),
-        loadResponses(agentLoopId || id),
-        loadSentResults(agentLoopId || id),
+        loadResponses(agentLoopId || id, responseCursor),
+        loadSentResults(agentLoopId || id, historyVersion),
         loadFinalResult(id),
         loadPendingAsks(id),
         loadPendingConfirms(id),
@@ -143,7 +155,15 @@ async function detailRun(id) {
         created_at: status?.created_at || "",
         prompt: created?.prompt ?? null,
         backend: created?.backend ?? null,
-        turns: buildTurns(walk.replies, walk.toolChildren, sentResults),
+        transcript: {
+            reset: resetTranscript,
+            agent_loop_id: agentLoopId,
+            replies: walk.replies,
+            tool_children: walk.toolChildren,
+            sent_results: sent.results,
+            response_cursor: walk.cursor,
+            history_version: sent.version,
+        },
         final_result: finalResult,
         pending_asks: pendingAsks,
         pending_confirms: pendingConfirms,
@@ -202,35 +222,28 @@ async function loadFinalResult(id) {
 // Logs are loaded lazily from a separate endpoint because a run can have many
 // derived executions. Include unfinished children so the currently streaming
 // recv activity is visible while the model is working.
-async function loadExecutionTreeLogs(workflowId) {
-    let executions;
-    try {
-        executions = await obeliskJson("/v1/executions?show_derived=true&length=200");
-    } catch (_) {
-        executions = [];
-    }
-    const tree = executions.filter((e) => e?.execution_id === workflowId
-        || (typeof e?.execution_id === "string" && e.execution_id.startsWith(workflowId + ".")));
-    if (!tree.some((e) => e.execution_id === workflowId)) {
-        tree.push({ execution_id: workflowId, ffqn: WORKFLOW_FFQN });
-    }
-
-    const batches = await Promise.all(tree.map(async (execution) => {
+async function loadExecutionTreeLogs(workflowId, startCursor) {
+    const logs = [];
+    let cursor = startCursor || "1970-01-01T00:00:00Z";
+    let including = !startCursor;
+    while (true) {
+        let page;
         try {
-            const logs = await obeliskJson(
-                `/v1/executions/${encodeURIComponent(execution.execution_id)}/logs`,
+            page = await obeliskJson(
+                `/v1/executions/${encodeURIComponent(workflowId)}/logs`
+                + `?show_derived=true&cursor=${encodeURIComponent(cursor)}`
+                + `&direction=newer&including_cursor=${including}&length=200`,
             );
-            return logs.map((entry) => ({
-                ...entry,
-                execution_id: execution.execution_id,
-                ffqn: execution.ffqn || "",
-            }));
-        } catch (_) { return []; }
-    }));
-    const logs = batches.flat();
-    logs.sort((a, b) => String(a.created_at || a.cursor || "")
-        .localeCompare(String(b.created_at || b.cursor || "")));
-    return { logs };
+        } catch (_) { break; }
+        if (!Array.isArray(page) || page.length === 0) break;
+        logs.push(...page);
+        const next = page[page.length - 1]?.cursor;
+        if (typeof next !== "string" || !next || next <= cursor) break;
+        cursor = next;
+        including = false;
+        if (page.length < 200) break;
+    }
+    return { logs, cursor: startCursor && logs.length === 0 ? startCursor : cursor };
 }
 
 async function loadPendingAsks(workflowId) {
@@ -416,13 +429,15 @@ function lineDiff(oldText, newText) {
 // name: `load-system-prompt`, `start`, `send`, `recv`, `cleanup`). We treat those as infrastructure
 // and everything else as a workflow-visible tool call. The `recv` activity now
 // returns a typed turn-outcome, so there is no LLM JSON left to parse here.
-const INFRA_NAMES = new Set(["load-system-prompt", "start", "send", "recv", "cleanup"]);
+const INFRA_NAMES = new Set([
+    "load-system-prompt", "start", "send", "recv", "inject", "injection", "cleanup",
+]);
 
-async function loadResponses(execId) {
+async function loadResponses(execId, startCursor = 0) {
     const replies = [];
     const toolChildren = [];
-    let cursor = 0;
-    let including = true;
+    let cursor = startCursor;
+    let including = startCursor === 0;
     while (true) {
         let payload;
         try {
@@ -459,19 +474,21 @@ async function loadResponses(execId) {
                         replies.push({ reply: r, presentation: "", blocks: [], narration: "" });
                     }
                 }
-            } else if (!INFRA_NAMES.has(joinName)) {
+            } else if (joinName && !INFRA_NAMES.has(joinName)) {
                 toolChildren.push({
                     id: ev.child_execution_id,
                     result: unwrapTypedResult(ev.result),
                 });
             }
         }
-        const max = payload.max_cursor;
-        if (typeof max !== "number" || responses.length === 0 || max <= cursor) break;
-        cursor = max;
+        if (responses.length === 0) break;
+        const next = responses[responses.length - 1]?.cursor;
+        if (typeof next !== "number" || next <= cursor) break;
+        cursor = next;
         including = false;
+        if (responses.length < 200) break;
     }
-    return { replies, toolChildren };
+    return { replies, toolChildren, cursor };
 }
 
 async function loadRecvPresentation(executionId) {
@@ -555,10 +572,10 @@ function findMatchingBrace(text, start) {
 // send join_set_request. Reading them here means the UI shows what was actually
 // sent to the LLM (post any workflow processing), not the upstream tool child's
 // raw result. Flattened in dispatch order to align 1:1 with the tool calls.
-async function loadSentResults(execId) {
+async function loadSentResults(execId, startVersion = 0) {
     const sent = [];
-    let version = 0;
-    let including = true;
+    let version = startVersion;
+    let including = startVersion === 0;
     while (true) {
         let payload;
         try {
@@ -576,12 +593,14 @@ async function loadSentResults(execId) {
                 for (const tr of input.tool_results) sent.push(normalizeSent(tr));
             }
         }
-        const max = payload.max_version;
-        if (typeof max !== "number" || events.length === 0 || max <= version) break;
-        version = max;
+        if (events.length === 0) break;
+        const next = events[events.length - 1]?.version;
+        if (typeof next !== "number" || next <= version) break;
+        version = next;
         including = false;
+        if (events.length < 200) break;
     }
-    return sent;
+    return { results: sent, version };
 }
 
 // A sent tool_result entry is { name, outcome: { ok|err } } where ok is the
@@ -626,104 +645,6 @@ function unwrapTypedResult(result) {
         return { err: typeof e === "string" ? e : (e?.value ?? JSON.stringify(e)) };
     }
     return null;
-}
-
-// Build a clean turn list from the typed agent-replies. We emit:
-//   { kind: "tool_calls", blocks, calls: [{name, args, child_id?, ok?|err?}] }
-//   { kind: "final", blocks, text }
-//   { kind: "error", blocks, text }
-//
-// Tool calls, child executions, and sent tool_results are all in dispatch order,
-// so a single cursor aligns them 1:1. The displayed response is what was sent to
-// the LLM (`sentResults`); we fall back to the child execution result when the
-// send isn't recorded (e.g. an in-flight turn, or apply_deployment which is
-// terminal and never sends results back). `child_id` always links to the child.
-function buildTurns(replies, toolChildren, sentResults) {
-    const turns = [];
-    let toolCursor = 0;
-    for (const item of replies) {
-        const reply = item && item.reply;
-        const narration = (item && typeof item.narration === "string") ? item.narration : "";
-        const presentation = (item && typeof item.presentation === "string") ? item.presentation : "";
-        const blocks = normalizeBlocks(item?.blocks, presentation, narration, reply);
-        if (!reply || typeof reply !== "object") continue;
-        if (typeof reply.final === "string") {
-            turns.push({ kind: "final", text: reply.final, blocks });
-        } else if (typeof reply.error === "string") {
-            turns.push({ kind: "error", text: reply.error, blocks });
-        } else if (Array.isArray(reply.tool_calls)) {
-            const calls = reply.tool_calls.map((c) => {
-                const child = toolChildren[toolCursor];
-                const sent = sentResults[toolCursor];
-                toolCursor += 1;
-                const base = {
-                    name: c?.name,
-                    args: parseArgs(c?.arguments_json),
-                    child_id: child?.id ?? null,
-                };
-                const src = sent || (child && child.result);
-                if (src) {
-                    if ("ok" in src) base.ok = src.ok;
-                    else if ("err" in src) base.err = src.err;
-                }
-                return base;
-            });
-            turns.push({ kind: "tool_calls", calls, blocks });
-        }
-    }
-    return turns;
-}
-
-function normalizeBlocks(blocks, presentation, narration, reply) {
-    const out = [];
-    if (Array.isArray(blocks)) {
-        for (const block of blocks) {
-            const kind = block?.kind === "mermaid"
-                ? "mermaid"
-                : (block?.kind === "thinking" ? "thinking" : "markdown");
-            if (typeof block?.content === "string" && block.content.trim()) {
-                out.push({ kind, content: block.content });
-            }
-        }
-    }
-    if (presentation.trim()) {
-        out.push(...splitMermaidBlocks(presentation, "markdown"));
-    }
-    if (narration.trim()) {
-        out.push(...splitMermaidBlocks(narration, "thinking"));
-    }
-    // Backward compatibility for final executions persisted before display
-    // fields were introduced.
-    if (out.length === 0 && typeof reply?.final === "string") {
-        out.push(...splitMermaidBlocks(reply.final, "markdown"));
-    }
-    return out;
-}
-
-function splitMermaidBlocks(text, proseKind) {
-    const source = String(text || "").replace(
-        /```markdown\s*\n([\s\S]*?)\nmermaid\s*\n([\s\S]*?)```/gi,
-        (_, prose, diagram) => `${prose.trim()}\n\n\`\`\`mermaid\n${diagram.trim()}\n\`\`\``,
-    );
-    const blocks = [];
-    const pattern = /```mermaid\s*\n([\s\S]*?)```/gi;
-    let cursor = 0;
-    let match;
-    while ((match = pattern.exec(source)) !== null) {
-        const prose = source.slice(cursor, match.index).trim();
-        if (prose) blocks.push({ kind: proseKind, content: prose });
-        const diagram = match[1].trim();
-        if (diagram) blocks.push({ kind: "mermaid", content: diagram });
-        cursor = pattern.lastIndex;
-    }
-    const tail = source.slice(cursor).trim();
-    if (tail) blocks.push({ kind: proseKind, content: tail });
-    return blocks;
-}
-
-function parseArgs(json) {
-    if (typeof json !== "string") return json ?? {};
-    try { return JSON.parse(json); } catch { return json; }
 }
 
 // ----- mutations --------------------------------------------------------
@@ -1110,7 +1031,17 @@ const SHELL_HTML = `<!doctype html>
 </main>
 <script>
 const OBELISK_UI_URL = "__OBELISK_UI_URL__";
-const state = { selected: null, runs: [], detail: null, lastSig: null, logs: null, logsOpen: false };
+const state = {
+  selected: null,
+  runs: [],
+  detail: null,
+  // Accumulated records plus the last server positions already fetched.
+  transcript: null,
+  lastSig: null,
+  logs: null,
+  logsCursor: '',
+  logsOpen: false,
+};
 const SIDEBAR_POLL_MS = 10000;
 const DETAIL_POLL_MS = 3000;
 let sidebarTimer = null;
@@ -1118,6 +1049,7 @@ let detailTimer = null;
 let sidebarRequest = null;
 let detailRequest = null;
 let detailAbort = null;
+let logsRequest = null;
 
 function execLink(id) {
   return OBELISK_UI_URL + '/execution/' + encodeURIComponent(id);
@@ -1181,8 +1113,10 @@ function setSelected(id) {
   if (id !== state.selected && detailAbort) detailAbort.abort();
   state.selected = id;
   state.detail = null;
+  state.transcript = null;
   state.lastSig = null;
   state.logs = null;
+  state.logsCursor = '';
   state.logsOpen = false;
   clearTimeout(detailTimer);
   const u = new URL(window.location.href);
@@ -1257,7 +1191,14 @@ function refreshDetail() {
   detailAbort = controller;
   const promise = (async () => {
     try {
-      const r = await fetch('/api/runs/' + encodeURIComponent(selected), {
+      const query = new URLSearchParams();
+      if (state.transcript?.agent_loop_id) {
+        query.set('agent_loop_id', state.transcript.agent_loop_id);
+        query.set('response_cursor', String(state.transcript.response_cursor || 0));
+        query.set('history_version', String(state.transcript.history_version || 0));
+      }
+      const suffix = query.toString() ? '?' + query.toString() : '';
+      const r = await fetch('/api/runs/' + encodeURIComponent(selected) + suffix, {
         headers: { accept: 'application/json' },
         signal: controller.signal,
       });
@@ -1266,8 +1207,15 @@ function refreshDetail() {
         main.innerHTML = '<div class="err-box">Failed to load run: HTTP ' + r.status + '</div>';
         return;
       }
-      state.detail = await r.json();
-      if (selected === state.selected) renderDetail();
+      const detail = await r.json();
+      mergeTranscript(detail.transcript);
+      detail.turns = buildCachedTurns();
+      delete detail.transcript;
+      state.detail = detail;
+      if (selected === state.selected) {
+        renderDetail();
+        if (state.logsOpen) refreshLogs();
+      }
     } catch (e) {
       if (e.name !== 'AbortError' && selected === state.selected) {
         main.innerHTML = '<div class="err-box">' + esc(String(e)) + '</div>';
@@ -1282,6 +1230,109 @@ function refreshDetail() {
   })();
   detailRequest = { id: selected, promise };
   return promise;
+}
+
+function mergeTranscript(delta) {
+  if (!delta) return;
+  const reset = delta.reset || !state.transcript
+    || state.transcript.agent_loop_id !== delta.agent_loop_id;
+  if (reset) {
+    state.transcript = {
+      agent_loop_id: delta.agent_loop_id || '',
+      replies: [],
+      tool_children: [],
+      sent_results: [],
+      response_cursor: 0,
+      history_version: 0,
+    };
+  }
+  state.transcript.replies.push(...(delta.replies || []));
+  state.transcript.tool_children.push(...(delta.tool_children || []));
+  state.transcript.sent_results.push(...(delta.sent_results || []));
+  state.transcript.response_cursor = delta.response_cursor || state.transcript.response_cursor;
+  state.transcript.history_version = delta.history_version || state.transcript.history_version;
+}
+
+function buildCachedTurns() {
+  const cached = state.transcript;
+  if (!cached) return [];
+  const turns = [];
+  let toolCursor = 0;
+  for (const item of cached.replies) {
+    const reply = item && item.reply;
+    const blocks = normalizeCachedBlocks(
+      item?.blocks,
+      typeof item?.presentation === 'string' ? item.presentation : '',
+      typeof item?.narration === 'string' ? item.narration : '',
+      reply,
+    );
+    if (!reply || typeof reply !== 'object') continue;
+    if (typeof reply.final === 'string') {
+      turns.push({ kind: 'final', text: reply.final, blocks });
+    } else if (typeof reply.error === 'string') {
+      turns.push({ kind: 'error', text: reply.error, blocks });
+    } else if (Array.isArray(reply.tool_calls)) {
+      const calls = reply.tool_calls.map((call) => {
+        const child = cached.tool_children[toolCursor];
+        const sent = cached.sent_results[toolCursor];
+        toolCursor += 1;
+        const rendered = {
+          name: call?.name,
+          args: parseCachedArgs(call?.arguments_json),
+          child_id: child?.id ?? null,
+        };
+        const result = sent || child?.result;
+        if (result && 'ok' in result) rendered.ok = result.ok;
+        else if (result && 'err' in result) rendered.err = result.err;
+        return rendered;
+      });
+      turns.push({ kind: 'tool_calls', calls, blocks });
+    }
+  }
+  return turns;
+}
+
+function parseCachedArgs(json) {
+  if (typeof json !== 'string' || !json) return {};
+  try { return JSON.parse(json); } catch (_) { return { raw: json }; }
+}
+
+function normalizeCachedBlocks(blocks, presentation, narration, reply) {
+  const out = [];
+  for (const block of Array.isArray(blocks) ? blocks : []) {
+    const kind = block?.kind === 'mermaid'
+      ? 'mermaid' : (block?.kind === 'thinking' ? 'thinking' : 'markdown');
+    if (typeof block?.content === 'string' && block.content.trim()) {
+      out.push({ kind, content: block.content });
+    }
+  }
+  if (presentation.trim()) out.push(...splitCachedMermaid(presentation, 'markdown'));
+  if (narration.trim()) out.push(...splitCachedMermaid(narration, 'thinking'));
+  if (out.length === 0 && typeof reply?.final === 'string') {
+    out.push(...splitCachedMermaid(reply.final, 'markdown'));
+  }
+  return out;
+}
+
+function splitCachedMermaid(text, proseKind) {
+  const source = String(text || '').replace(
+    /\`\`\`markdown\\s*\\n([\\s\\S]*?)\\nmermaid\\s*\\n([\\s\\S]*?)\`\`\`/gi,
+    (_, prose, diagram) => prose.trim() + '\\n\\n\`\`\`mermaid\\n' + diagram.trim() + '\\n\`\`\`',
+  );
+  const blocks = [];
+  const pattern = /\`\`\`mermaid\\s*\\n([\\s\\S]*?)\`\`\`/gi;
+  let cursor = 0;
+  let match;
+  while ((match = pattern.exec(source)) !== null) {
+    const prose = source.slice(cursor, match.index).trim();
+    if (prose) blocks.push({ kind: proseKind, content: prose });
+    const diagram = match[1].trim();
+    if (diagram) blocks.push({ kind: 'mermaid', content: diagram });
+    cursor = pattern.lastIndex;
+  }
+  const tail = source.slice(cursor).trim();
+  if (tail) blocks.push({ kind: proseKind, content: tail });
+  return blocks;
 }
 
 function renderDetail() {
@@ -1527,17 +1578,31 @@ function updateLogsSlot() {
 
 async function refreshLogs() {
   if (!state.selected) return;
-  try {
-    const r = await fetch('/api/logs/' + encodeURIComponent(state.selected), {
-      headers: { accept: 'application/json' },
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
-    state.logs = data.logs || [];
-  } catch (e) {
-    state.logs = [{ execution_id: state.selected, ffqn: '', level: 'error', message: String(e) }];
-  }
-  updateLogsSlot();
+  if (logsRequest) return logsRequest;
+  const selected = state.selected;
+  const cursor = state.logsCursor;
+  logsRequest = (async () => {
+    try {
+      const suffix = cursor ? '?cursor=' + encodeURIComponent(cursor) : '';
+      const r = await fetch('/api/logs/' + encodeURIComponent(selected) + suffix, {
+        headers: { accept: 'application/json' },
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+      if (selected !== state.selected) return;
+      if (!state.logs) state.logs = [];
+      state.logs.push(...(data.logs || []));
+      state.logsCursor = data.cursor || state.logsCursor;
+    } catch (e) {
+      if (selected !== state.selected) return;
+      if (!state.logs) state.logs = [];
+      state.logs.push({ execution_id: selected, ffqn: '', level: 'error', message: String(e) });
+    } finally {
+      logsRequest = null;
+      if (selected === state.selected) updateLogsSlot();
+    }
+  })();
+  return logsRequest;
 }
 
 function renderDiffLines(lines) {

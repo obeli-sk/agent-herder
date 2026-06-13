@@ -236,8 +236,10 @@ on whatever port the Obelisk server has configured for webhooks (default
 The detail page reconstructs the conversation from `/v1/executions/<id>/responses`
 by reading the typed `turn-outcome` returned by each `session.recv` child
 execution (the `reply` outcomes), so no extra storage is needed and no LLM JSON
-is parsed in the UI. Its logs control loads workflow, stdout, and stderr entries
-from the root execution and every nested execution, including an active recv.
+is parsed in the UI. The browser retains the latest response/history positions
+and polls only newer records. Its logs control similarly retains the latest log
+timestamp and incrementally loads workflow, stdout, and stderr entries from the
+root execution and every nested execution, including an active recv.
 
 ## Inspecting a run
 
