@@ -28,21 +28,22 @@ export default async function handle(request) {
     const method = request.method;
 
     try {
+        const query = parseQuery(request.url);
         if (method === "GET" && path === "/") return htmlShell();
         if (method === "GET" && path === "/api/runs") return jsonResponse(await listRuns());
         if (method === "GET" && path.startsWith("/api/runs/")) {
             const id = decodeURIComponent(path.substring("/api/runs/".length));
             if (!id) return jsonError(400, "missing run id");
             return jsonResponse(await detailRun(id, {
-                agentLoopId: url.searchParams.get("agent_loop_id") || "",
-                responseCursor: nonNegativeInteger(url.searchParams.get("response_cursor")),
-                historyVersion: nonNegativeInteger(url.searchParams.get("history_version")),
+                agentLoopId: query.agent_loop_id || "",
+                responseCursor: nonNegativeInteger(query.response_cursor),
+                historyVersion: nonNegativeInteger(query.history_version),
             }));
         }
         if (method === "GET" && path.startsWith("/api/logs/")) {
             const id = decodeURIComponent(path.substring("/api/logs/".length));
             if (!id) return jsonError(400, "missing run id");
-            return jsonResponse(await loadExecutionTreeLogs(id, url.searchParams.get("cursor") || ""));
+            return jsonResponse(await loadExecutionTreeLogs(id, query.cursor || ""));
         }
         if (method === "POST" && path === "/api/submit") return await submit(request);
         if (method === "POST" && path.startsWith("/api/pause/")) {
@@ -100,6 +101,31 @@ function jsonResponse(value, status = 200) {
 
 function jsonError(status, message) {
     return jsonResponse({ error: message }, status);
+}
+
+function parseQuery(rawUrl) {
+    const query = Object.create(null);
+    const queryStart = rawUrl.indexOf("?");
+    if (queryStart < 0) return query;
+
+    const fragmentStart = rawUrl.indexOf("#", queryStart);
+    const queryString = rawUrl.substring(
+        queryStart + 1,
+        fragmentStart < 0 ? rawUrl.length : fragmentStart,
+    );
+    for (const part of queryString.split("&")) {
+        if (!part) continue;
+        const separator = part.indexOf("=");
+        const rawKey = separator < 0 ? part : part.substring(0, separator);
+        const rawValue = separator < 0 ? "" : part.substring(separator + 1);
+        const key = decodeQueryComponent(rawKey);
+        if (!(key in query)) query[key] = decodeQueryComponent(rawValue);
+    }
+    return query;
+}
+
+function decodeQueryComponent(value) {
+    return decodeURIComponent(value.replace(/\+/g, " "));
 }
 
 function nonNegativeInteger(value) {
@@ -161,6 +187,7 @@ async function detailRun(id, cursorState) {
             replies: walk.replies,
             tool_children: walk.toolChildren,
             sent_results: sent.results,
+            operator_messages: sent.operatorMessages,
             response_cursor: walk.cursor,
             history_version: sent.version,
         },
@@ -458,20 +485,27 @@ async function loadResponses(execId, startCursor = 0) {
                 // Tolerate the old shape where reply was the bare agent-reply.
                 const value = ev.result?.ok?.value ?? ev.result?.ok;
                 if (value && typeof value === "object" && value.reply) {
-                    const r = value.reply;
-                    if (r && typeof r === "object" && "reply" in r) {
-                        let presentation = typeof r.presentation === "string" ? r.presentation : "";
-                        if (!presentation && Array.isArray(r.reply?.tool_calls)) {
+                    const wrappedReply = value.reply;
+                    if (wrappedReply && typeof wrappedReply === "object" && "reply" in wrappedReply) {
+                        let presentation = typeof wrappedReply.presentation === "string" ? wrappedReply.presentation : "";
+                        if (!presentation && Array.isArray(wrappedReply.reply?.tool_calls)) {
                             presentation = await loadRecvPresentation(ev.child_execution_id);
                         }
                         replies.push({
-                            reply: r.reply,
+                            reply: wrappedReply.reply,
                             presentation,
-                            blocks: Array.isArray(r.blocks) ? r.blocks : [],
-                            narration: typeof r.narration === "string" ? r.narration : "",
+                            blocks: Array.isArray(wrappedReply.blocks) ? wrappedReply.blocks : [],
+                            narration: typeof wrappedReply.narration === "string" ? wrappedReply.narration : "",
+                            created_at: r.event?.created_at || "",
                         });
                     } else {
-                        replies.push({ reply: r, presentation: "", blocks: [], narration: "" });
+                        replies.push({
+                            reply: wrappedReply,
+                            presentation: "",
+                            blocks: [],
+                            narration: "",
+                            created_at: r.event?.created_at || "",
+                        });
                     }
                 }
             } else if (joinName && !INFRA_NAMES.has(joinName)) {
@@ -574,6 +608,7 @@ function findMatchingBrace(text, start) {
 // raw result. Flattened in dispatch order to align 1:1 with the tool calls.
 async function loadSentResults(execId, startVersion = 0) {
     const sent = [];
+    const operatorMessages = [];
     let version = startVersion;
     let including = startVersion === 0;
     while (true) {
@@ -592,6 +627,17 @@ async function loadSentResults(execId, startVersion = 0) {
             if (input && Array.isArray(input.tool_results)) {
                 for (const tr of input.tool_results) sent.push(normalizeSent(tr));
             }
+            const messages = he.request?.params?.[2];
+            if (Array.isArray(messages)) {
+                for (const text of messages) {
+                    if (typeof text === "string" && text.trim()) {
+                        operatorMessages.push({
+                            text: text.trim(),
+                            created_at: e.created_at || "",
+                        });
+                    }
+                }
+            }
         }
         if (events.length === 0) break;
         const next = events[events.length - 1]?.version;
@@ -600,7 +646,7 @@ async function loadSentResults(execId, startVersion = 0) {
         including = false;
         if (events.length < 200) break;
     }
-    return { results: sent, version };
+    return { results: sent, operatorMessages, version };
 }
 
 // A sent tool_result entry is { name, outcome: { ok|err } } where ok is the
@@ -763,8 +809,7 @@ async function cancelPendingDescendants(runId, signalId) {
 }
 
 // Fulfil the concrete pending injection stub owned by this workflow. The
-// workflow consumes the response at its next send boundary and performs the
-// socket write as a derived activity.
+// workflow consumes the response and includes it in its next session.send call.
 async function sayToAgent(request, runId) {
     if (!runId) return jsonError(400, "missing run id");
     let payload;
@@ -1242,6 +1287,7 @@ function mergeTranscript(delta) {
       replies: [],
       tool_children: [],
       sent_results: [],
+      operator_messages: [],
       response_cursor: 0,
       history_version: 0,
     };
@@ -1249,6 +1295,7 @@ function mergeTranscript(delta) {
   state.transcript.replies.push(...(delta.replies || []));
   state.transcript.tool_children.push(...(delta.tool_children || []));
   state.transcript.sent_results.push(...(delta.sent_results || []));
+  state.transcript.operator_messages.push(...(delta.operator_messages || []));
   state.transcript.response_cursor = delta.response_cursor || state.transcript.response_cursor;
   state.transcript.history_version = delta.history_version || state.transcript.history_version;
 }
@@ -1258,6 +1305,7 @@ function buildCachedTurns() {
   if (!cached) return [];
   const turns = [];
   let toolCursor = 0;
+  let sequence = 0;
   for (const item of cached.replies) {
     const reply = item && item.reply;
     const blocks = normalizeCachedBlocks(
@@ -1268,9 +1316,9 @@ function buildCachedTurns() {
     );
     if (!reply || typeof reply !== 'object') continue;
     if (typeof reply.final === 'string') {
-      turns.push({ kind: 'final', text: reply.final, blocks });
+      turns.push({ kind: 'final', text: reply.final, blocks, created_at: item.created_at, sequence: sequence++ });
     } else if (typeof reply.error === 'string') {
-      turns.push({ kind: 'error', text: reply.error, blocks });
+      turns.push({ kind: 'error', text: reply.error, blocks, created_at: item.created_at, sequence: sequence++ });
     } else if (Array.isArray(reply.tool_calls)) {
       const calls = reply.tool_calls.map((call) => {
         const child = cached.tool_children[toolCursor];
@@ -1286,9 +1334,24 @@ function buildCachedTurns() {
         else if (result && 'err' in result) rendered.err = result.err;
         return rendered;
       });
-      turns.push({ kind: 'tool_calls', calls, blocks });
+      turns.push({ kind: 'tool_calls', calls, blocks, created_at: item.created_at, sequence: sequence++ });
     }
   }
+  for (const message of cached.operator_messages || []) {
+    if (typeof message?.text !== 'string' || !message.text.trim()) continue;
+    turns.push({
+      kind: 'operator_message',
+      text: message.text,
+      created_at: message.created_at || '',
+      sequence: sequence++,
+    });
+  }
+  turns.sort((a, b) => {
+    if (a.created_at && b.created_at && a.created_at !== b.created_at) {
+      return a.created_at.localeCompare(b.created_at);
+    }
+    return a.sequence - b.sequence;
+  });
   return turns;
 }
 
@@ -1663,6 +1726,9 @@ function renderMermaidWhenReady(nodes, attempt) {
 }
 
 function renderTurn(t, i) {
+  if (t.kind === 'operator_message') {
+    return '<div class="bubble user"><div class="label">operator</div><pre>' + esc(t.text) + '</pre></div>';
+  }
   if (t.kind === 'final') return displayBlocksHtml(t.blocks);
   if (t.kind === 'error') {
     return displayBlocksHtml(t.blocks)
