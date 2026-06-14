@@ -16,8 +16,8 @@
 // Socket protocol: each connection writes one JSON line, half-closes, reads one
 // JSON line back.
 //
-//   { "op": "send", "input": { "prompt": "..." } }
-//   { "op": "send", "input": { "tool_results": [{ "name", "outcome": {ok|err} }] } }
+//   { "op": "send", "input": { "prompt": "..." }, "operator_messages": [...] }
+//   { "op": "send", "input": { "tool_results": [...] }, "operator_messages": [...] }
 //      Renders the common agent-input into one user message, begins a new turn.
 //
 //   { "op": "recv", "timeout_ms": 30000 }
@@ -34,9 +34,6 @@
 //        "error",      error: string                backend reported a turn failure
 //      "raw" carries the native events seen since the last poll, for the
 //      activity to echo to its stderr (debugging only; not in the typed return).
-//
-//   { "op": "inject", "text": "..." }
-//      Queue an operator message; merged into the next user turn (steer/interrupt).
 //
 //   { "op": "status" }    Diagnostics.
 //   { "op": "shutdown" }  Best-effort graceful shutdown.
@@ -73,11 +70,6 @@ let turnStart = 0;
 // Number of turns sent so far (the codex backend prepends the system prompt on
 // turn 0 and switches to `exec resume` afterward).
 let turnCount = 0;
-
-// Operator messages queued via the `inject` op. They are merged into the next
-// user turn (appended after the prompt / tool-results) so an operator can steer
-// or interrupt a running agent; delivery happens at the next send boundary.
-const injectQueue = [];
 
 // Parse a child's stdout as newline-delimited JSON, pushing each event onto the
 // shared buffer. `onEvent` lets a backend react to events as they arrive.
@@ -537,13 +529,17 @@ backend.init();
 
 // ---- socket ops -------------------------------------------------------------
 
-async function opSend({ input }) {
+async function opSend({ input, operator_messages }) {
   let text = renderUserText(input);
   if (text === null) return { ok: false, error: "input must be { prompt } or { tool_results }" };
-  // Merge any operator messages queued since the last send.
-  if (injectQueue.length > 0) {
-    const ops = injectQueue.splice(0);
-    text += "\n\n" + ops.map((m) => `[Operator message]: ${m}`).join("\n\n");
+  if (!Array.isArray(operator_messages) ||
+      operator_messages.some((message) => typeof message !== "string" || !message.trim())) {
+    return { ok: false, error: "operator_messages must contain only non-empty strings" };
+  }
+  if (operator_messages.length > 0) {
+    text += "\n\n" + operator_messages
+      .map((message) => `[Operator message]: ${message.trim()}`)
+      .join("\n\n");
   }
   try {
     turnStart = events.length; // a new turn's events accumulate from here
@@ -599,12 +595,6 @@ async function opRecv({ timeout_ms }) {
   return { ok: true, outcome: "working", raw };
 }
 
-function opInject({ text }) {
-  if (typeof text !== "string" || !text.trim()) return { ok: false, error: "text is required" };
-  injectQueue.push(text.trim());
-  return { ok: true, queued: injectQueue.length };
-}
-
 function opStatus() {
   return {
     ok: true,
@@ -633,7 +623,6 @@ async function dispatch(line) {
   switch (cmd.op) {
     case "send": return await opSend(cmd);
     case "recv": return await opRecv(cmd);
-    case "inject": return opInject(cmd);
     case "status": return opStatus();
     case "shutdown": return await opShutdown();
     default: return { ok: false, error: `unknown op: ${cmd.op}` };

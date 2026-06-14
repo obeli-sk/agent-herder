@@ -43,11 +43,20 @@ async function main() {
   const socketPath = parseJsonArg(2, "socket");
   // input is the common agent-input variant: { prompt } | { tool_results }.
   const input = parseJsonArg(3, "input");
+  const operatorMessages = parseJsonArg(4, "operator-messages");
   const valid = input && typeof input === "object" &&
     (typeof input.prompt === "string" || Array.isArray(input.tool_results));
   if (!valid) failPermanent("input must be { prompt } or { tool_results }");
+  if (!Array.isArray(operatorMessages) ||
+      operatorMessages.some((text) => typeof text !== "string" || !text.trim())) {
+    failPermanent("operator-messages must contain only non-empty strings");
+  }
 
-  const response = await request(socketPath, { op: "send", input });
+  const response = await request(socketPath, {
+    op: "send",
+    input,
+    operator_messages: operatorMessages.map((text) => text.trim()),
+  });
   if (!response.ok) fail(response.error || "send failed");
   writeOk(null);
 }

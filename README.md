@@ -15,7 +15,6 @@ activity/
   agent-start.js     spawn the docker container, wait for the socket (claude.start)
   agent-send.js      send one agent-input (prompt | tool-results) (session.send)
   agent-recv.js      drain one turn; return a typed turn-outcome (session.recv)
-  agent-inject.js    workflow-owned adapter that queues a fulfilled injection
   agent-cleanup.js   shut the server down, docker rm (session.cleanup)
 workflow/
   agent.js           start -> race(agent-loop, teardown) -> cleanup
@@ -34,6 +33,7 @@ never parse LLM JSON.
 ```
 agent-input  (workflow -> agent)   variant { prompt(string),
                                              tool-results(list<{name, outcome}>) }
+session.send metadata              operator-messages(list<string>)
 agent-reply  (agent -> workflow)   variant { final(string), error(string),
                                              tool-calls(list<{name, arguments-json}>) }
 turn-outcome (recv ok)             variant { working, reply(agent-reply) }
@@ -75,7 +75,8 @@ return. Adding codex means branching on `AGENT_BACKEND` in `server.js` plus a
 The workflow, not claude, is the agent. Each turn:
 
 1. `session.send` sends the next `agent-input` (`{prompt}` on the first turn, or
-   `{tool_results}` from the previous turn).
+   `{tool_results}` from the previous turn), plus any operator message consumed
+   from the durable injection stub at that send boundary.
 2. `session.recv` polls until the `turn-outcome` is a `reply`.
 3. If the reply is `final`, return it; if it is `error`, throw it.
 4. If the reply is `tool-calls`, dispatch each call to its activity and send the

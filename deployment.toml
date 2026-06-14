@@ -66,6 +66,7 @@ ffqn = "obelisk-agent:agent/session.send"
 params = [
   { name = "socket", type = "string" },
   { name = "input", type = "variant { prompt(string), tool-results(list<record { name: string, outcome: result<string, string> }>) }" },
+  { name = "operator-messages", type = "list<string>" },
 ]
 return_type = "result<_, string>"
 location = "${DEPLOYMENT_DIR}/activity/agent-send.js"
@@ -98,20 +99,6 @@ params = [
 ]
 return_type = "result<_, string>"
 location = "${DEPLOYMENT_DIR}/activity/agent-cleanup.js"
-exec.lock_expiry.seconds = 30
-max_retries = 3
-env_vars = ["PATH"]
-
-# Queue a workflow-consumed operator message into a running session's container.
-# The execution ID selects the unique per-run container/socket.
-[[activity_exec]]
-ffqn = "obelisk-agent:agent/session.inject"
-params = [
-  { name = "execution-id", type = "string" },
-  { name = "text", type = "string" },
-]
-return_type = "result<u32, string>"
-location = "${DEPLOYMENT_DIR}/activity/agent-inject.js"
 exec.lock_expiry.seconds = 30
 max_retries = 3
 env_vars = ["PATH"]
@@ -352,7 +339,7 @@ return_type = "result<_, string>"
 
 # One generic operator-message offer owned by workflow.agent-loop. The UI may
 # fulfil it only while this concrete stub execution is pending. The workflow
-# consumes it at the next send boundary and immediately opens another offer.
+# includes it in the next session.send call and immediately opens another offer.
 [[activity_stub]]
 name = "session_injection"
 ffqn = "obelisk-agent:agent/session.injection"
@@ -366,7 +353,6 @@ ffqn = "obelisk-agent:workflow/workflow.agent-loop"
 params = [
   { name = "prompt",       type = "string" },
   { name = "socket-path",  type = "string" },
-  { name = "execution-id", type = "string" },
 ]
 return_type = "result<string, string>"
 location = "${DEPLOYMENT_DIR}/workflow/agent-loop.js"

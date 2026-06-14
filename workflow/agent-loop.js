@@ -9,17 +9,13 @@ const MAX_CORRECTIONS = 3;     // re-prompts allowed per turn for a malformed re
 const MAX_TOOL_RESULT_BYTES = 96 * 1024;  // encoded-size cap per tool_result (argv-safe)
 const INJECTION_FFQN = "obelisk-agent:agent/session.injection";
 
-export default function agentLoop(prompt, socketPath, executionId) {
+export default function agentLoop(prompt, socketPath) {
     if (typeof prompt !== "string" || !prompt.trim()) {
         throw "prompt is required";
     }
     if (typeof socketPath !== "string" || !socketPath) {
         throw "socket path is required";
     }
-    if (typeof executionId !== "string" || !executionId) {
-        throw "execution id is required";
-    }
-
     // agent-input variant: { prompt } for the first turn, then { tool_results }.
     let nextInput = { prompt };
     let finalAnswer = null;
@@ -35,8 +31,9 @@ export default function agentLoop(prompt, socketPath, executionId) {
     try {
         for (let turn = 0; turn < MAX_TURNS; turn += 1) {
             console.log(`--- turn ${turn} ---`);
-            injection = prepareInjection(injection, executionId);
-            const reply = sendAndDrain(socketPath, nextInput);
+            const prepared = prepareInjection(injection);
+            injection = prepared.injection;
+            const reply = sendAndDrain(socketPath, nextInput, prepared.operatorMessages);
 
             if (typeof reply.final === "string") {
                 finalAnswer = reply.final;
@@ -88,20 +85,18 @@ export default function agentLoop(prompt, socketPath, executionId) {
 
 // Keep exactly one durable operator-input stub outstanding while the agent can
 // accept generic steering. A completed response is consumed at a send boundary,
-// queued into the concrete container by a normal derived activity, and replaced
-// with a fresh stub before the next agent turn starts.
-function prepareInjection(injection, executionId) {
+// included in that normal session.send call, and replaced with a fresh stub.
+function prepareInjection(injection) {
     let current = injection || openInjection();
     const text = current.joinSet.joinNextTry();
-    if (text === undefined) return current;
+    if (text === undefined) return { injection: current, operatorMessages: [] };
     if (typeof text !== "string" || !text.trim()) {
         throw "injection text must be a non-empty string";
     }
-    session.inject(executionId, text);
-    console.log(`queued operator injection from ${current.executionId}`);
+    console.log(`consumed operator injection from ${current.executionId}`);
     current.joinSet.close();
     current = openInjection();
-    return current;
+    return { injection: current, operatorMessages: [text.trim()] };
 }
 
 function openInjection() {
@@ -130,11 +125,13 @@ function isBlockingHumanTool(call) {
 //     Re-prompt it (up to MAX_CORRECTIONS) to re-emit a bare JSON envelope.
 // Both arms are `permanent-` so Obelisk never auto-retries the recv activity;
 // recovery is the workflow's job because it requires another send.
-function sendAndDrain(socketPath, input) {
+function sendAndDrain(socketPath, input, operatorMessages) {
     let pending = input;
+    let pendingOperatorMessages = operatorMessages;
     let corrections = 0;
     while (true) {
-        session.send(socketPath, pending);
+        session.send(socketPath, pending, pendingOperatorMessages);
+        pendingOperatorMessages = [];
         try {
             return drainTurn(socketPath);
         } catch (error) {
