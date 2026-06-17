@@ -330,6 +330,8 @@ function dispatch(call, draft) {
                 return deploymentWriteFile(name, args, draft);
             case "obelisk.deployment_add_component":
                 return deploymentAddComponent(name, args, draft);
+            case "obelisk.deployment_set_exec":
+                return deploymentSetExec(name, args, draft);
             case "obelisk.deployment_remove_component":
                 return deploymentRemoveComponent(name, args, draft);
             case "obelisk.deployment_push":
@@ -443,6 +445,7 @@ function deploymentCheckout(name, args, draft) {
         collisions: fs.collisions,
         note: "Read/edit source files with deployment_read_file / deployment_write_file. "
             + "Change structure with deployment_add_component / deployment_remove_component. "
+            + "Change exec/retry config (lock_expiry, max_retries, ...) with deployment_set_exec. "
             + "deployment.toml is a read-only structural view. Finish with deployment_push.",
     }));
 }
@@ -473,7 +476,7 @@ function deploymentWriteFile(name, args, draft) {
     const path = requireString(args.path, "path");
     if (typeof args.content !== "string") throw "content is required";
     if (path === "deployment.toml") {
-        throw "deployment.toml is read-only; change structure with deployment_add_component / deployment_remove_component";
+        throw "deployment.toml is read-only; change structure with deployment_add_component / deployment_remove_component, or exec/retry config with deployment_set_exec";
     }
     const fs = collectFiles(draft.config);
     if (fs.readonly.has(path)) throw `${path} is a read-only backtrace source`;
@@ -502,6 +505,10 @@ function setFileContent(config, path, content) {
 
 function deploymentAddComponent(name, args, draft) {
     requireDraft(draft);
+    rejectUnknownArgs(args, [
+        "kind", "name", "ffqn", "source", "params", "return_type",
+        "routes", "allowed_hosts", "env_vars",
+    ], "deployment_add_component");
     const kind = requireString(args.kind, "kind");
     const source = requireString(args.source, "source");
     const componentName = requireString(args.name, "name");
@@ -525,10 +532,13 @@ function deploymentAddComponent(name, args, draft) {
     const template = previous || list[0];
     if (!template) throw `deployment has no ${spec.key} defaults to base a new component on`;
 
+    // Replacing an existing component keeps its source file_name; otherwise the
+    // body lands in a fresh "<name>.js". Never silently rename on replace.
+    const location = inlineSource(componentName, source, previous);
     let next;
     if (kind === "js_activity") {
         next = {
-            ...template, name: componentName, location: inlineSource(componentName, source),
+            ...template, name: componentName, location,
             content_digest: null, component_digest: null, ffqn,
             params: arrayArgOr(args.params, previous?.params),
             env_vars: arrayArgOr(args.env_vars, previous?.env_vars),
@@ -537,7 +547,7 @@ function deploymentAddComponent(name, args, draft) {
         };
     } else if (kind === "js_workflow") {
         next = {
-            ...template, name: componentName, location: inlineSource(componentName, source),
+            ...template, name: componentName, location,
             content_digest: null, component_digest: null, ffqn,
             params: arrayArgOr(args.params, previous?.params),
             return_type: stringArg(args.return_type, previous?.return_type || "result"),
@@ -546,18 +556,115 @@ function deploymentAddComponent(name, args, draft) {
         const routes = arrayArgOr(args.routes, previous?.routes);
         if (routes.length === 0) throw "routes must contain at least one route";
         next = {
-            ...template, name: componentName, location: inlineSource(componentName, source),
+            ...template, name: componentName, location,
             content_digest: null, routes,
             env_vars: arrayArgOr(args.env_vars, previous?.env_vars),
             allowed_host: allowedHostsArgOr(args.allowed_hosts, previous?.allowed_host),
         };
     }
     const action = applyUpsert(list, index, next);
-    return ok(name, JSON.stringify({ action, kind, id: ffqn || componentName, file: `${componentName}.js` }));
+    return ok(name, JSON.stringify({ action, kind, id: ffqn || componentName, file: location.content.file_name }));
+}
+
+// Editable execution/retry knobs and where each lives on the canonical
+// component: `lock_expiry`/`tick_sleep`/`batch_size`/`instance_limiter` sit in
+// the `exec` sub-object; the rest are top-level fields. These are config-only
+// (they do not change the compiled artifact), so there is no source to re-supply.
+const EXEC_FIELDS = {
+    lock_expiry: { in: "exec", kind: "duration" },
+    tick_sleep: { in: "exec", kind: "duration" },
+    batch_size: { in: "exec", kind: "u32" },
+    instance_limiter: { in: "exec", kind: "limiter" },
+    max_retries: { in: "top", kind: "u32" },
+    retry_exp_backoff: { in: "top", kind: "duration" },
+    max_output_bytes: { in: "top", kind: "u32" },
+    forward_stdout: { in: "top", kind: "string" },
+    forward_stderr: { in: "top", kind: "string" },
+    logs_store_min_level: { in: "top", kind: "string" },
+};
+
+function deploymentSetExec(name, args, draft) {
+    requireDraft(draft);
+    rejectUnknownArgs(args, ["kind", "id", ...Object.keys(EXEC_FIELDS)], "deployment_set_exec");
+    const kind = requireString(args.kind, "kind");
+    const id = requireString(args.id, "id");
+    const spec = {
+        js_activity: { key: "activities_js", matches: (item) => item?.ffqn === id },
+        js_workflow: { key: "workflows_js", matches: (item) => item?.ffqn === id },
+        js_webhook: { key: "webhooks_js", matches: (item) => item?.name === id },
+    }[kind];
+    if (!spec) throw "kind must be js_activity, js_workflow, or js_webhook";
+    const list = requireArray(draft.config[spec.key], spec.key);
+    const item = list.find(spec.matches);
+    if (!item) throw `no ${kind} with id ${id}; check the FFQN/name (list with deployment.toml)`;
+
+    const changed = {};
+    for (const [field, meta] of Object.entries(EXEC_FIELDS)) {
+        if (!(field in args) || args[field] === undefined) continue;
+        const value = coerceExecField(field, meta.kind, args[field]);
+        if (meta.in === "exec") {
+            item.exec = item.exec || {};
+            item.exec[field] = value;
+        } else {
+            item[field] = value;
+        }
+        changed[field] = value;
+    }
+    if (Object.keys(changed).length === 0) {
+        throw `no editable fields supplied; provide one of: ${Object.keys(EXEC_FIELDS).join(", ")}`;
+    }
+    return ok(name, JSON.stringify({
+        action: "updated", kind, id, changed,
+        effective: {
+            exec: item.exec, max_retries: item.max_retries,
+            retry_exp_backoff: item.retry_exp_backoff, max_output_bytes: item.max_output_bytes,
+            forward_stdout: item.forward_stdout, forward_stderr: item.forward_stderr,
+            logs_store_min_level: item.logs_store_min_level,
+        },
+    }));
+}
+
+const DURATION_UNITS = ["milliseconds", "seconds", "minutes", "hours", "days"];
+
+function coerceExecField(field, kind, value) {
+    switch (kind) {
+        case "duration":
+            return durationArg(value, field);
+        case "u32":
+            if (!Number.isFinite(value) || value < 0) throw `${field} must be a non-negative integer`;
+            return Math.trunc(value);
+        case "limiter":
+            if (value === "unlimited") return "unlimited";
+            if (Number.isFinite(value) && value >= 0) return Math.trunc(value);
+            throw `${field} must be "unlimited" or a non-negative integer`;
+        case "string":
+            return requireString(value, field);
+        default:
+            return value;
+    }
+}
+
+function durationArg(value, field) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw `${field} must be an object like { "seconds": 30 } (units: ${DURATION_UNITS.join(", ")})`;
+    }
+    const out = {};
+    for (const [unit, n] of Object.entries(value)) {
+        if (!DURATION_UNITS.includes(unit)) {
+            throw `${field}: unknown unit "${unit}"; use one of ${DURATION_UNITS.join(", ")}`;
+        }
+        if (!Number.isFinite(n) || n < 0) throw `${field}.${unit} must be a non-negative number`;
+        out[unit] = Math.trunc(n);
+    }
+    if (Object.keys(out).length === 0) {
+        throw `${field} needs at least one unit (${DURATION_UNITS.join(", ")})`;
+    }
+    return out;
 }
 
 function deploymentRemoveComponent(name, args, draft) {
     requireDraft(draft);
+    rejectUnknownArgs(args, ["kind", "id"], "deployment_remove_component");
     const kind = requireString(args.kind, "kind");
     const id = requireString(args.id, "id");
     const spec = {
@@ -624,8 +731,19 @@ function applyUpsert(list, index, next) {
     return "replaced";
 }
 
-function inlineSource(name, source) {
-    return { content: { content: source, file_name: `${name}.js` } };
+function inlineSource(name, source, previous) {
+    const fileName = previous?.location?.content?.file_name || `${name}.js`;
+    return { content: { content: source, file_name: fileName } };
+}
+
+// Reject argument keys the tool does not consume, so a misnamed or unsupported
+// field surfaces as an error instead of being silently dropped.
+function rejectUnknownArgs(args, allowed, tool) {
+    if (!args || typeof args !== "object") return;
+    const extra = Object.keys(args).filter((k) => !allowed.includes(k));
+    if (extra.length) {
+        throw `${tool}: unknown argument(s) ${extra.join(", ")}; allowed: ${allowed.join(", ")}`;
+    }
 }
 
 // --- Read-only `deployment.toml` rendering -----------------------------------

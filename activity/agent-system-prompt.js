@@ -216,9 +216,31 @@ obelisk.deployment_add_component
     "allowed_hosts"?: [{ "pattern": string, "methods": [string] }],
     "env_vars"?: [string | { "key": string, "value": string }]
   }
-  Adds or replaces a component (its body becomes the file "<name>.js"). Omitted
-  optional fields are preserved when replacing and copied from an existing
-  component of the same kind otherwise.
+  Adds or replaces a component (a new one's body becomes the file "<name>.js";
+  replacing keeps the existing file path). Omitted optional fields are preserved
+  when replacing and copied from an existing component of the same kind
+  otherwise. Unknown fields are rejected. This does NOT edit exec/retry config
+  (lock_expiry, max_retries, ...) — use deployment_set_exec for that.
+
+obelisk.deployment_set_exec
+  args: {
+    "kind": "js_activity" | "js_workflow" | "js_webhook",
+    "id": string,                                    // FFQN, or name for js_webhook
+    "lock_expiry"?: { "seconds": number } | { "milliseconds": number } | ...,
+    "tick_sleep"?: { "milliseconds": number } | ...,
+    "batch_size"?: number,
+    "instance_limiter"?: "unlimited" | number,
+    "max_retries"?: number,
+    "retry_exp_backoff"?: { "milliseconds": number } | ...,
+    "max_output_bytes"?: number,
+    "forward_stdout"?: string,
+    "forward_stderr"?: string,
+    "logs_store_min_level"?: string
+  }
+  Edits an existing component's execution/retry config in place, without
+  re-supplying its source. Duration units: milliseconds, seconds, minutes,
+  hours, days. Supply at least one field; unknown fields are rejected. Returns
+  the changed fields and the component's effective config.
 
 obelisk.deployment_remove_component
   args: {
@@ -263,7 +285,9 @@ input.ask_user
 - To change a deployment: deployment_checkout, edit files and/or structure, then
   deployment_push. Read deployment.toml first to understand the structure.
 - Prefer deployment_write_file for source changes; use add/remove_component only
-  to change the set of components or their structural fields.
+  to change the set of components or their structural fields; use
+  deployment_set_exec to change exec/retry config (lock_expiry, max_retries, ...)
+  without touching source.
 - If a tool returns an error, decide whether to retry, use a different tool, or
   finish.
 - A bare-prose reply with no tool_calls finishes the execution. To converse,
