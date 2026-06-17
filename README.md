@@ -101,6 +101,22 @@ it survives server restarts. An operator can cancel the sleep (which throws
 inside the workflow); the workflow catches the cancellation and resumes
 immediately instead of failing the run.
 
+## Operator controls (teardown and injection stubs)
+
+Two `activity_stub`s let an operator steer a live run through the web UI; both
+work by the UI completing or cancelling a pending stub execution:
+
+- `agent/session.teardown-signal` is a long-lived supervisor control child. The
+  public `workflow.run` races it against the entire nested `agent-loop` workflow
+  (`start -> race(agent-loop, teardown) -> cleanup`). Cancelling this stub (UI
+  `POST /api/cleanup`) wins the race, so the supervisor tears the container down
+  and returns instead of waiting for the agent to finish.
+- `agent/session.injection` is one generic operator-message offer owned by
+  `workflow.agent-loop`. The UI may fulfil it (`POST /api/say`) only while that
+  concrete stub execution is pending. When the workflow consumes a completed
+  offer it includes the text in the next `session.send` call and immediately
+  opens a fresh offer, so exactly one is outstanding at a time.
+
 Tools exposed to the LLM (each is a real Obelisk activity, fully durable and
 inspectable):
 
