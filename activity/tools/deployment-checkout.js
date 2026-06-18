@@ -2,10 +2,12 @@
 //   func(deployment-id: option<string>) -> result<string, string>
 //
 // Fetch a deployment to be edited as a virtual working copy. Returns
-//   { deployment_id, active_deployment_id, config_json }
-// where config_json is the FULL canonical config including inline source bodies
-// (unlike webapi.get-deployment, which strips them). The workflow externalizes
-// those bodies into editable files, mirroring `obelisk deployment get`.
+//   { deployment_id, active_deployment_id, deployment_toml }
+// where deployment_toml is the verbatim stored manifest. Deployment-owned
+// script/exec files are referenced by deployment-relative `location` +
+// `content_digest`; their bytes live in the CAS and are fetched on demand with
+// webapi.deployment-read-blob. The workflow splits this TOML into per-component
+// blocks for editing.
 //
 // When deployment-id is omitted the currently active deployment is checked out.
 export default async function deployment_checkout(deploymentId) {
@@ -16,13 +18,13 @@ export default async function deployment_checkout(deploymentId) {
     const wanted = (typeof deploymentId === "string" && deploymentId.trim()) ? deploymentId.trim() : active;
     if (!wanted) throw "there is no active deployment to check out; pass a deployment-id";
     const record = await getJson(`${base}/v1/deployments/${encodeURIComponent(wanted)}`);
-    if (typeof record.config_json !== "string") {
-        throw `deployment ${wanted} has no config_json`;
+    if (typeof record.deployment_toml !== "string") {
+        throw `deployment ${wanted} has no deployment_toml`;
     }
     return JSON.stringify({
         deployment_id: wanted,
         active_deployment_id: active,
-        config_json: record.config_json,
+        deployment_toml: record.deployment_toml,
     });
 }
 

@@ -3,17 +3,13 @@
 //        offset: option<u32>, length: option<u32>,
 //        max-bytes: option<u32>) -> result<string, string>
 //
-// Returns the deployment record with config_json decoded to `config` and
-// component sources stripped. JS source bodies are replaced by source_bytes
-// metadata, while WASM backtrace source maps are omitted entirely. Stripping
-// happens here (not in the workflow) so the durable child-execution result and
-// the UI show exactly the compact record the model receives. Fetch JS sources
-// with webapi.get-component-source.
+// Returns the deployment record with its verbatim `deployment_toml` manifest.
+// Deployment-owned script/exec sources are referenced by `location` +
+// `content_digest`; fetch their bodies with webapi.get-component-source.
 //
-// Without a component selector, the complete record is returned when it fits.
-// Oversized records retain component-array prefixes and gain pagination
-// metadata describing how many entries were trimmed from each array. Selecting
-// a component type returns only a page from that config array.
+// The manifest is returned whole when it fits in the byte budget. For a large
+// manifest, pass `offset`/`length` to page a byte window of `deployment_toml`
+// (the `component-type` selector is accepted for compatibility but ignored).
 const MAX_RESULT_BYTES = 96 * 1024;
 
 export default async function get_deployment(deploymentId, componentType, offset, length, maxBytes) {
@@ -25,107 +21,31 @@ export default async function get_deployment(deploymentId, componentType, offset
     );
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;
     const record = JSON.parse(await resp.text());
-    if (typeof record.config_json === "string") {
-        const config = JSON.parse(record.config_json);
-        delete record.config_json;
-        record.config = config;
-        const componentTypes = Object.keys(config).filter((key) => Array.isArray(config[key]));
-        for (const key of componentTypes) {
-            const list = config[key];
-            for (const item of list) {
-                stripSources(item);
-            }
-        }
 
-        const budget = byteBudget(maxBytes);
-        const selectedType = typeof componentType === "string" ? componentType : "";
-        const explicitPage = Boolean(selectedType) || offset > 0 || length > 0;
-        const originalCounts = {};
-        for (const key of componentTypes) originalCounts[key] = config[key].length;
-        const offsets = {};
-        for (const key of componentTypes) offsets[key] = 0;
-        if (explicitPage && !selectedType) {
-            throw "component-type is required when offset or length is specified";
-        }
-        if (selectedType && !componentTypes.includes(selectedType)) {
-            throw `unknown component-type ${selectedType}`;
-        }
+    const budget = byteBudget(maxBytes);
+    const toml = typeof record.deployment_toml === "string" ? record.deployment_toml : "";
+    const total = toml.length;
+    const off = clampOffset(offset, total);
+    const requested = positiveInt(length);
+    const windowEnd = requested > 0 ? Math.min(off + requested, total) : total;
+    let slice = toml.slice(off, windowEnd);
 
-        if (!explicitPage) {
-            if (encodedBytes(record) <= budget) return JSON.stringify(record);
-        } else {
-            const off = clampOffset(offset, config[selectedType].length);
-            offsets[selectedType] = off;
-            const requested = positiveInt(length);
-            const end = requested > 0
-                ? Math.min(off + requested, config[selectedType].length)
-                : config[selectedType].length;
-            const selected = config[selectedType].slice(off, end);
-            for (const key of componentTypes) config[key] = [];
-            config[selectedType] = selected;
-        }
-
-        const pagedTypes = explicitPage ? [selectedType] : componentTypes;
-        fitRecord(record, config, pagedTypes, offsets, originalCounts, budget, explicitPage ? selectedType : "");
+    // Reserve room for the surrounding record metadata, then trim the manifest
+    // window to fit the budget rather than failing outright.
+    record.deployment_toml = "";
+    let overhead = encodedBytes(record);
+    if (slice.length + overhead > budget) {
+        slice = slice.slice(0, Math.max(0, budget - overhead));
     }
+    record.deployment_toml = slice;
+    const returnedEnd = off + slice.length;
+    record.manifest_window = {
+        offset: off,
+        returned: slice.length,
+        total,
+        next_offset: returnedEnd < total ? returnedEnd : null,
+    };
     return JSON.stringify(record);
-}
-
-function stripSources(item) {
-    const content = item && item.location && item.location.content;
-    if (content && typeof content.content === "string") {
-        item.location.content = {
-            file_name: content.file_name,
-            source_bytes: content.content.length,
-        };
-    }
-    if (item && typeof item.content === "string") {
-        item.content = { source_bytes: item.content.length };
-    }
-
-    const sources = item && item.backtrace && item.backtrace.frame_files_to_sources;
-    if (sources && typeof sources === "object" && !Array.isArray(sources)) {
-        delete item.backtrace.frame_files_to_sources;
-    }
-}
-
-function fitRecord(record, config, componentTypes, offsets, originalCounts, budget, selectedType) {
-    while (true) {
-        const components = {};
-        let returnedItems = 0;
-        let trimmedItems = 0;
-        for (const key of componentTypes) {
-            const returned = config[key].length;
-            const trimmed = originalCounts[key] - offsets[key] - returned;
-            returnedItems += returned;
-            trimmedItems += trimmed;
-            components[key] = {
-                offset: offsets[key],
-                returned,
-                trimmed,
-                next_offset: trimmed > 0 ? offsets[key] + returned : null,
-            };
-        }
-        record.pagination = {
-            component_type: selectedType || null,
-            max_bytes: budget,
-            returned_items: returnedItems,
-            trimmed_items: trimmedItems,
-            components,
-        };
-        if (encodedBytes(record) <= budget) return;
-
-        let removed = false;
-        for (let i = componentTypes.length - 1; i >= 0; i -= 1) {
-            const key = componentTypes[i];
-            if (config[key].length > 0) {
-                config[key].pop();
-                removed = true;
-                break;
-            }
-        }
-        if (!removed) throw `max-bytes ${budget} is too small for deployment metadata`;
-    }
 }
 
 function encodedBytes(record) {

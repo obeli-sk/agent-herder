@@ -145,13 +145,11 @@ obelisk.get_deployment
     "length"?: number,
     "max_bytes"?: number
   }
-  Returns the complete compact deployment when it fits, with config as a JSON
-  object rather than an encoded config_json string. JS source bodies are
-  replaced by source byte-count metadata; WASM frame_files_to_sources maps are
-  omitted because stored backtrace sources are scoped to the component digest.
-  If entries must be omitted,
-  pagination.components reports returned, trimmed, and next_offset for each
-  config component array. Continue with that component_type and next_offset.
+  Returns the deployment record with its verbatim deployment.toml manifest.
+  Owned script/exec sources are referenced by location + content_digest; their
+  bodies live in the content store (fetch with get_component_source). A large
+  manifest is paged: manifest_window reports offset, returned, total, and
+  next_offset; continue from next_offset until it is null.
 
 obelisk.get_component_source
   args: {
@@ -160,108 +158,88 @@ obelisk.get_component_source
     "offset"?: number,
     "length"?: number
   }
-  The component selector may be a full ComponentId
-  ("component_type:name:component_digest"), a function FFQN, or an unambiguous
-  component name such as "workflow.run" or "ui".
-  Returns one component's source, paginated by character offset. The JSON
-  identifies the matched kind, component ID, and FFQN, and contains file_name,
-  source_bytes, offset, length, next_offset, and a body marker. The source
-  follows the JSON verbatim inside that marker. Continue with next_offset until
-  it is null.
+  The component selector is a function FFQN or a component name. Returns one
+  owned source, fetched from the content store and paginated by character
+  offset. The JSON contains section, ffqn, name, location, content_digest,
+  source_bytes, offset, length, next_offset, and raw_body (the page). Continue
+  with next_offset until it is null.
 
-## Editing a deployment: checkout -> edit files -> push
+## Editing a deployment: checkout -> change one component -> submit -> activate
 
-Editing works like \`obelisk deployment get\`. You check out a deployment into a
-workflow-held working copy whose source bodies are split into files referenced
-by relative path; you read and edit those files; then you push the result as a
-new deployment. You never handle the whole canonical config as one blob.
+The stored deployment.toml is the source of truth. You check out a deployment
+into a workflow-held working copy split into per-component TOML blocks, then
+change EXACTLY ONE component at a time and submit it as a new inactive
+deployment. Submitting often, one component per deployment, lets the server
+validate each small change; the working copy automatically rebases onto each
+submitted deployment so you can continue. Finally you activate a deployment.
 
 obelisk.deployment_checkout
   args: {
-    "deployment_id"?: string
+    "deployment_id"?: string,
+    "from_scratch"?: boolean
   }
-  Checks out a deployment (the active one when omitted) as the working copy.
-  Returns the file list (each path with byte size, read_only flag, and the
-  components that source it) and component counts. "deployment.toml" is a
-  read-only structural view; backtrace sources are read-only.
+  Checks out a deployment (the active one when deployment_id is omitted) as the
+  working copy, or starts an empty one with from_scratch. Returns the component
+  list (section, id, location, has_script) and the base/active deployment IDs.
 
-obelisk.deployment_list_files
+obelisk.deployment_list_components
   args: {}
-  Lists the working-copy files again.
+  Lists the working-copy components again, plus any pending (uncommitted)
+  change.
 
-obelisk.deployment_read_file
+obelisk.deployment_read_component
   args: {
-    "path": string
+    "section": string,                               // e.g. "activity_js", "workflow_wasm"
+    "id": string                                     // the component's ffqn, or name
   }
-  Returns { path, content, ... }. Read "deployment.toml" for the structure, or a
-  relative source path for one component's body.
+  Returns { section, id, location, toml } and, for owned JS/exec components, the
+  script body and content_digest. "toml" is the component's verbatim manifest
+  block; edit it and pass it back to deployment_put_component.
 
-obelisk.deployment_write_file
+obelisk.deployment_put_component
   args: {
-    "path": string,
-    "content": string
+    "section": string,
+    "id": string,
+    "toml": string,                                  // exactly one [[section]] block
+    "script"?: string                                // owned JS/exec source body
   }
-  Replaces one source file's content. A file shared by several components updates
-  all of them. "deployment.toml" and backtrace sources are read-only.
-
-obelisk.deployment_add_component
-  args: {
-    "kind": "js_activity" | "js_workflow" | "js_webhook",
-    "name": string,
-    "ffqn": string,                                  // not for js_webhook
-    "source": string,
-    "params"?: [{ "name": string, "type": string }],
-    "return_type"?: string,
-    "routes"?: [{ "methods": [string], "route": string }],   // js_webhook
-    "allowed_hosts"?: [{ "pattern": string, "methods": [string] }],
-    "env_vars"?: [string | { "key": string, "value": string }]
-  }
-  Adds or replaces a component (a new one's body becomes the file "<name>.js";
-  replacing keeps the existing file path). Omitted optional fields are preserved
-  when replacing and copied from an existing component of the same kind
-  otherwise. Unknown fields are rejected. This does NOT edit exec/retry config
-  (lock_expiry, max_retries, ...) — use deployment_set_exec for that.
-
-obelisk.deployment_set_exec
-  args: {
-    "kind": "js_activity" | "js_workflow" | "js_webhook",
-    "id": string,                                    // FFQN, or name for js_webhook
-    "lock_expiry"?: { "seconds": number } | { "milliseconds": number } | ...,
-    "tick_sleep"?: { "milliseconds": number } | ...,
-    "batch_size"?: number,
-    "instance_limiter"?: "unlimited" | number,
-    "max_retries"?: number,
-    "retry_exp_backoff"?: { "milliseconds": number } | ...,
-    "max_output_bytes"?: number,
-    "forward_stdout"?: string,
-    "forward_stderr"?: string,
-    "logs_store_min_level"?: string
-  }
-  Edits an existing component's execution/retry config in place, without
-  re-supplying its source. Duration units: milliseconds, seconds, minutes,
-  hours, days. Supply at least one field; unknown fields are rejected. Returns
-  the changed fields and the component's effective config.
+  Adds or replaces one component from a TOML block (which carries all of its
+  config: params, return_type, env_vars, allowed_host, exec.lock_expiry,
+  max_retries, ...). The block's section and id (ffqn/name) must match the args.
+  For an owned JS/exec component, set location = "<relative/path.js>" and pass
+  the script; the digest is computed at submit. Only one component may change
+  per deployment: submit before editing a different one.
 
 obelisk.deployment_remove_component
   args: {
-    "kind": "js_activity" | "js_workflow" | "js_webhook",
+    "section": string,
     "id": string
   }
-  Removes a component. The ID is the FFQN for activities and workflows, or the
-  name for webhooks. Removing a missing component is a no-op.
+  Removes a component. Removing a missing one is a no-op. Counts as the single
+  per-deployment change.
 
-obelisk.deployment_push
+obelisk.deployment_submit
   args: {
-    "mode": "submit" | "enqueue" | "apply",
     "description": string,
-    "verify"?: boolean,
+    "allow_missing_runtime_config"?: boolean,
     "deployment_id"?: string
   }
-  Reassembles the working copy and submits it as a new deployment with the given
-  description. "submit" leaves it inactive; "enqueue" activates it on the next
-  server restart; "apply" hot-redeploys it now. "apply" requires operator
-  approval and MUST be the final tool call; its cancellation is final and must
-  not be retried.
+  Submits the working copy as a new INACTIVE deployment and returns its ID. The
+  tool computes content digests and uploads only changed sources. By default
+  missing environment variables / secrets fail the submit; set
+  allow_missing_runtime_config to store the deployment anyway. After a
+  successful submit the working copy rebases onto the new deployment.
+
+obelisk.deployment_activate
+  args: {
+    "deployment_id"?: string,                        // defaults to the last submitted
+    "mode": "enqueue" | "apply",
+    "allow_missing_runtime_config"?: boolean,        // enqueue only; apply is always strict
+    "summary"?: string                               // shown on the apply approval card
+  }
+  "enqueue" activates the deployment on the next server restart. "apply"
+  hot-redeploys it now; it requires operator approval, MUST be the final tool
+  call, and its cancellation is final and must not be retried.
 
 ## Human input
 
@@ -282,12 +260,13 @@ input.ask_user
   activity for them.
 - Never invent tools or arguments not listed above.
 - Never invent execution IDs, FFQNs, or deployment IDs. Discover them first.
-- To change a deployment: deployment_checkout, edit files and/or structure, then
-  deployment_push. Read deployment.toml first to understand the structure.
-- Prefer deployment_write_file for source changes; use add/remove_component only
-  to change the set of components or their structural fields; use
-  deployment_set_exec to change exec/retry config (lock_expiry, max_retries, ...)
-  without touching source.
+- To change a deployment: deployment_checkout, then change ONE component with
+  deployment_put_component / deployment_remove_component, then deployment_submit.
+  Repeat per component to chop a large change into small, validated deployments.
+  Activate with deployment_activate only when the user wants it live.
+- Read a component with deployment_read_component first; edit its returned TOML
+  block (and script, for owned JS/exec) and pass it back to
+  deployment_put_component. All of a component's config lives in its TOML block.
 - If a tool returns an error, decide whether to retry, use a different tool, or
   finish.
 - A bare-prose reply with no tool_calls finishes the execution. To converse,

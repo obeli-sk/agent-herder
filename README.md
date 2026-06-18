@@ -129,20 +129,21 @@ inspectable):
 | `obelisk.get_logs`         | `obelisk-agent:tools/webapi.get-logs`            |
 | `obelisk.submit`           | `obelisk-agent:tools/webapi.submit-json`         |
 | `obelisk.get_result`       | `obelisk-agent:tools/webapi.get-result-json`     |
-| `obelisk.deployment_checkout` | `obelisk-agent:tools/webapi.deployment-checkout` |
-| `obelisk.deployment_push`  | `obelisk-agent:tools/webapi.deployment-submit` + `…switch` / `…apply-deployment` |
+| `obelisk.deployment_checkout` | `obelisk-agent:tools/webapi.deployment-checkout` (+ `…deployment-read-blob`) |
+| `obelisk.deployment_submit` | `obelisk-agent:tools/webapi.deployment-submit`   |
+| `obelisk.deployment_activate` | `obelisk-agent:tools/webapi.deployment-switch` / `…apply-deployment` |
 | `http.get`                 | `obelisk-agent:tools/http.get`                   |
 | `input.ask_user`           | `obelisk-agent:tools/input.ask-user` *(stub)*    |
 
 Execution and deployment list tools expose the REST API pagination cursors.
 `obelisk.get_logs` also supports nested executions, log/stream filters, and
-cursor pagination. `obelisk.get_deployment` returns the complete compact
-deployment when it fits, with `config` as structured JSON and embedded source
-bodies removed. WASM `frame_files_to_sources` maps are omitted. Oversized
-deployments are trimmed by config component array and include continuation
-offsets. A specific array can be requested with `component_type`, `offset`, and
-`length`. This is a read-only inspector; to *edit* a deployment, use the
-checkout/push tools below.
+cursor pagination. `obelisk.get_deployment` returns the deployment record with
+its verbatim `deployment_toml` manifest; owned sources are referenced by
+`location` + `content_digest` and fetched separately with
+`obelisk.get_component_source` (from the content store). A large manifest is
+paged with `offset` / `length` (a byte window) and `manifest_window` carries the
+continuation offset. This is a read-only inspector; to *edit* a deployment, use
+the checkout/submit tools below.
 
 `input.ask_user` is configured as `activity_stub`: it parks the workflow and
 waits for an operator to PUT a response. The web UI surfaces pending asks on
@@ -156,32 +157,39 @@ curl -X PUT http://127.0.0.1:5005/v1/executions/<child-id>/stub \
 Cancelling the stub child surfaces as an err tool_result; the LLM can react
 or emit `{"final": "Cancelled by user."}`.
 
-## Editing a deployment: checkout -> edit files -> push
+## Editing a deployment: checkout -> change one component -> submit -> activate
 
-Editing mirrors `obelisk deployment get`: instead of pushing the giant canonical
-config through the model, the workflow holds a working copy and exposes its
-source bodies as individual files.
+The stored `deployment.toml` is the source of truth. The workflow holds a
+working copy split into per-component TOML blocks and changes one component per
+intermediate deployment, so the server validates small diffs instead of one big
+reassembled config.
 
 1. `obelisk.deployment_checkout` fetches a deployment (the active one by default)
-   via `webapi.deployment-checkout`, which returns the **full** canonical config
-   including inline sources. The workflow externalizes every owned script
-   `location.content` into a file at its `file_name`, deduped by path (components
-   with identical content share one file), exactly as `deployment_canonical_to_toml`
-   collects side files. WASM `frame_files_to_sources` sources are exposed
-   read-only; `deployment.toml` is a read-only structural view rendered from the
-   canonical config.
-2. `obelisk.deployment_read_file` / `deployment_write_file` read and replace one
-   file at a time (a shared file updates every referencing component).
-   `deployment_add_component` / `deployment_remove_component` change the set of
-   components and their structural fields. All edits stay in workflow memory.
-3. `obelisk.deployment_push` reassembles the working copy (re-inlining each file,
-   clearing recomputable digests) and submits it as a new deployment with a
-   `description`. `mode` is `submit` (inactive), `enqueue` (active next restart,
-   via `webapi.deployment-switch`), or `apply` (hot redeploy now).
-4. `apply` parks on the `deploy.confirm-apply` operator gate, then schedules the
-   hot switch out of process (`webapi.apply-deployment`); a synchronous switch
-   from inside the activity would deadlock the executor. It is terminal and must
-   be the final tool call.
+   via `webapi.deployment-checkout`, which returns the verbatim `deployment_toml`.
+   The workflow splits it into top-level component blocks (`[[activity_js]]`,
+   `[[workflow_wasm]]`, ...), preserved as exact text plus parsed metadata
+   (section, id, owned `location` / `content_digest`). `from_scratch` starts an
+   empty working copy.
+2. `obelisk.deployment_read_component` returns one component's verbatim TOML block
+   and, for owned JS/exec components, its script body (fetched from the content
+   store via `webapi.deployment-read-blob`). `obelisk.deployment_put_component`
+   adds or replaces one component from an edited TOML block (+ optional script);
+   `deployment_remove_component` drops one. Only one component may change per
+   deployment; all edits stay in workflow memory.
+3. `obelisk.deployment_submit` assembles the manifest, fills `content_digest` for
+   changed sources (sha256 computed in `deployment-submit.js`), and submits it as
+   a new **inactive** deployment via `webapi.deployment-submit`. It preflights a
+   JSON submit (no blobs — unchanged files already in the CAS are not re-uploaded)
+   and, on a `409` incomplete-package response, retries as a `multipart/form-data`
+   package attaching only the missing sources. `allow_missing_runtime_config`
+   tolerates absent env vars / secrets. The working copy then rebases onto the
+   submitted deployment so editing can continue.
+4. `obelisk.deployment_activate` makes a deployment live: `enqueue` (active next
+   restart, via `webapi.deployment-switch`) or `apply` (hot redeploy now). `apply`
+   parks on the `deploy.confirm-apply` operator gate, then schedules the hot
+   switch out of process (`webapi.apply-deployment`); a synchronous switch from
+   inside the activity would deadlock the executor. It is terminal and must be the
+   final tool call.
 
 Removing a missing component is a no-op (`already_absent`). Because the working
 copy is plain workflow memory derived from the durable checkout result, it is

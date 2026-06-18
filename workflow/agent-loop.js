@@ -20,13 +20,17 @@ export default function agentLoop(prompt, socketPath) {
     let nextInput = { prompt };
     let finalAnswer = null;
     let injection = null;
-    // Checked-out deployment working copy. `config` is the full canonical config
-    // (structural source of truth); source bodies are exposed as editable files
-    // derived from it on demand. See the deployment_* tools below.
+    // Checked-out deployment working copy. The verbatim deployment.toml is split
+    // into per-component blocks; the agent edits one component at a time and each
+    // submit produces a new intermediate deployment (see the deployment_* tools).
     const deploymentDraft = {
-        config: null,
+        checkedOut: false,
         baseDeploymentId: null,
         activeDeploymentId: null,
+        preamble: "",
+        blocks: [],            // [{ section, id, location, digest, hasScript, text }]
+        editedFiles: {},       // location -> edited source text (for the next submit)
+        dirty: [],             // component keys changed since the base (max one)
     };
 
     try {
@@ -58,9 +62,9 @@ export default function agentLoop(prompt, socketPath) {
                     console.log(`  ${call?.name}: ${"ok" in result.outcome ? "ok" : `err=${result.outcome.err}`}`);
                     return result;
                 });
-                // A hot redeploy (deployment_push mode "apply") is terminal: the
-                // switch runs out of process after this workflow finishes, so we
-                // must not continue the loop past it.
+                // A hot redeploy (deployment_activate mode "apply") is terminal:
+                // the switch runs out of process after this workflow finishes, so
+                // we must not continue the loop past it.
                 const applyIndex = reply.tool_calls.findIndex(isHotApplyPush);
                 if (applyIndex !== -1) {
                     const applyResult = results[applyIndex];
@@ -69,7 +73,7 @@ export default function agentLoop(prompt, socketPath) {
                     } else {
                         finalAnswer = `Deployment hot reload was not scheduled: ${applyResult.outcome.err}`;
                     }
-                    console.log("deployment_push(apply) is terminal; finishing workflow before switch");
+                    console.log("deployment_activate(apply) is terminal; finishing workflow before switch");
                     break;
                 }
                 nextInput = { tool_results: results };
@@ -120,10 +124,10 @@ function isBlockingHumanTool(call) {
     return call?.name === "input.ask_user" || isHotApplyPush(call);
 }
 
-// A deployment_push requesting a hot redeploy: it parks on the confirm-apply
+// A deployment_activate requesting a hot redeploy: it parks on the confirm-apply
 // human gate and is terminal, so it owns the input UI while blocked.
 function isHotApplyPush(call) {
-    if (call?.name !== "obelisk.deployment_push") return false;
+    if (call?.name !== "obelisk.deployment_activate") return false;
     try {
         const args = call.arguments_json ? JSON.parse(call.arguments_json) : {};
         return args && args.mode === "apply";
@@ -301,8 +305,8 @@ function dispatch(call, draft) {
                     (args.length | 0) || 20,
                 ));
             case "obelisk.get_deployment":
-                // Sources are stripped and config_json is decoded server-side, so
-                // the child result is the compact record the model receives.
+                // Returns the record with the verbatim deployment_toml (paged by
+                // byte window server-side so the child result fits the budget).
                 return ok(name, webapi.getDeployment(
                     requireString(args.deployment_id, "deployment_id"),
                     optionalString(args.component_type),
@@ -322,20 +326,18 @@ function dispatch(call, draft) {
                 return ok(name, webapi.currentDeploymentId());
             case "obelisk.deployment_checkout":
                 return deploymentCheckout(name, args, draft);
-            case "obelisk.deployment_list_files":
-                return deploymentListFiles(name, draft);
-            case "obelisk.deployment_read_file":
-                return deploymentReadFile(name, args, draft);
-            case "obelisk.deployment_write_file":
-                return deploymentWriteFile(name, args, draft);
-            case "obelisk.deployment_add_component":
-                return deploymentAddComponent(name, args, draft);
-            case "obelisk.deployment_set_exec":
-                return deploymentSetExec(name, args, draft);
+            case "obelisk.deployment_list_components":
+                return deploymentListComponents(name, draft);
+            case "obelisk.deployment_read_component":
+                return deploymentReadComponent(name, args, draft);
+            case "obelisk.deployment_put_component":
+                return deploymentPutComponent(name, args, draft);
             case "obelisk.deployment_remove_component":
                 return deploymentRemoveComponent(name, args, draft);
-            case "obelisk.deployment_push":
-                return deploymentPush(name, args, draft);
+            case "obelisk.deployment_submit":
+                return deploymentSubmit(name, args, draft);
+            case "obelisk.deployment_activate":
+                return deploymentActivate(name, args, draft);
             case "input.ask_user":
                 return ok(name, JSON.stringify({ answer: askUser.askUser(requireString(args.question, "question")) }));
             default:
@@ -346,394 +348,327 @@ function dispatch(call, draft) {
     }
 }
 
-// --- Deployment working copy (checkout -> edit files -> push) ----------------
+// --- Deployment working copy (checkout -> edit one component -> submit) -------
 //
-// The workflow keeps the checked-out canonical config in memory as the
-// structural source of truth. Source bodies are externalized into a virtual
-// file map exactly as `obelisk deployment get` does: each owned script location
-// `{ content: { content, file_name } }` becomes a file at `file_name`, deduped
-// by path so components sharing identical content share one file. WASM backtrace
-// `frame_files_to_sources` sources are exposed read-only. The agent edits those
-// files (and structure via typed ops), then pushes.
-
-// Script-source component arrays and the field identifying each component.
-const SCRIPT_ARRAYS = [
-    { key: "activities_js", kind: "js_activity", idField: "ffqn" },
-    { key: "activities_exec", kind: "exec_activity", idField: "ffqn" },
-    { key: "workflows_js", kind: "js_workflow", idField: "ffqn" },
-    { key: "webhooks_js", kind: "js_webhook", idField: "name" },
-];
-// WASM component arrays carrying backtrace source maps (read-only files).
-const BACKTRACE_ARRAYS = [
-    { key: "workflows_wasm", kind: "wasm_workflow" },
-    { key: "webhooks_wasm", kind: "wasm_webhook" },
-];
+// The verbatim stored deployment.toml is the source of truth. The workflow
+// splits it into top-level component blocks ([[activity_js]], [[workflow_wasm]],
+// ...), each kept as exact text plus parsed metadata (section, id, owned script
+// location/digest). The agent edits ONE component at a time (its TOML snippet
+// and, for owned JS/exec components, its script body); each submit fills the
+// content digests and stores a new intermediate, inactive deployment. After a
+// successful submit the working copy rebases onto that new deployment, so a big
+// change is chopped into many small, server-validated deployments.
 
 function requireDraft(draft) {
-    if (!draft || draft.config === null) {
+    if (!draft || !draft.checkedOut) {
         throw "no deployment checked out; call deployment_checkout first";
     }
 }
 
-function componentLabel(item, idField) {
-    return (item && (item[idField] || item.ffqn || item.name)) || "?";
+function componentKey(section, id) {
+    return `${section}:${id}`;
 }
 
-// Walk the canonical config and build the virtual filesystem: path -> content,
-// path -> referencing components, and the set of read-only (backtrace) paths.
-function collectFiles(config) {
-    const files = {};
-    const refs = {};
-    const readonly = new Set();
-    const collisions = [];
-    const add = (path, content, ref, isReadonly) => {
-        if (path in files) {
-            if (files[path] !== content && !collisions.includes(path)) collisions.push(path);
-        } else {
-            files[path] = content;
-        }
-        (refs[path] = refs[path] || []).push(ref);
-        if (isReadonly) readonly.add(path);
+// Split a deployment.toml into a (usually empty) preamble and one block per
+// top-level [[section]]. Comment/blank lines lead the block that follows them;
+// every source line is preserved so assembleToml reproduces the input verbatim.
+function splitComponents(toml) {
+    const lines = toml.split("\n");
+    const blocks = [];
+    let current = null;   // source lines for the open block
+    let buffer = [];      // pending comment/blank lines (lead the next block)
+    const isTopHeader = (line) => {
+        const t = line.trim();
+        return t.startsWith("[[") && t.endsWith("]]") && !t.slice(2, -2).includes(".");
     };
-    for (const { key, kind, idField } of SCRIPT_ARRAYS) {
-        for (const item of config[key] || []) {
-            const content = item && item.location && item.location.content;
-            if (content && typeof content.content === "string" && typeof content.file_name === "string") {
-                add(content.file_name, content.content, `${kind}:${componentLabel(item, idField)}`, false);
-            }
+    const isCommentOrBlank = (line) => {
+        const t = line.trim();
+        return t === "" || t.startsWith("#");
+    };
+    for (const line of lines) {
+        if (isTopHeader(line)) {
+            if (current) blocks.push(current);
+            current = [];
+            for (const b of buffer) current.push(b);
+            buffer = [];
+            current.push(line);
+        } else if (current === null) {
+            buffer.push(line);                 // preamble, before any component
+        } else if (isCommentOrBlank(line)) {
+            buffer.push(line);                 // trailing of current or leading of next
+        } else {
+            for (const b of buffer) current.push(b);
+            buffer = [];
+            current.push(line);
         }
     }
-    for (const { key, kind } of BACKTRACE_ARRAYS) {
-        for (const item of config[key] || []) {
-            const sources = item && item.backtrace && item.backtrace.frame_files_to_sources;
-            if (!sources || typeof sources !== "object") continue;
-            for (const source of Object.values(sources)) {
-                if (source && typeof source.content === "string" && typeof source.file_name === "string") {
-                    add(source.file_name, source.content, `${kind}:${componentLabel(item, "name")}`, true);
-                }
-            }
-        }
+    let preamble = "";
+    if (current) {
+        for (const b of buffer) current.push(b);   // trailing lines stay with the last block
+        blocks.push(current);
+    } else {
+        preamble = buffer.join("\n");
     }
-    return { files, refs, readonly, collisions };
+    return { preamble, blocks: blocks.map(blockFromLines) };
 }
 
-function fileListing(fs) {
-    const entries = Object.keys(fs.files).sort().map((path) => ({
-        path,
-        bytes: fs.files[path].length,
-        read_only: fs.readonly.has(path),
-        components: fs.refs[path] || [],
+// Build a block record from its source lines: section from the header and the
+// main-table keys (ffqn/name/location/content_digest), stopping at the first
+// sub-table so an [[activity_js.allowed_host]] key is never read as the id.
+function blockFromLines(lines) {
+    const text = lines.join("\n");
+    let section = null;
+    const meta = { ffqn: null, name: null, location: null, digest: null };
+    let seenHeader = false;
+    for (const line of lines) {
+        const t = line.trim();
+        if (t.startsWith("[")) {
+            if (!seenHeader && t.startsWith("[[")) {
+                section = t.slice(2, t.indexOf("]"));
+                seenHeader = true;
+                continue;
+            }
+            break;                              // a sub-table ends the main table
+        }
+        if (!seenHeader) continue;
+        for (const key of ["ffqn", "name", "location", "content_digest"]) {
+            const value = keyStringValue(line, key);
+            if (value !== null) meta[key === "content_digest" ? "digest" : key] = value;
+        }
+    }
+    const id = meta.ffqn || meta.name || "?";
+    return {
+        section: section || "?",
+        id,
+        location: meta.location,
+        digest: meta.digest,
+        hasScript: Boolean(meta.location) && isOwnedPath(meta.location),
+        text,
+    };
+}
+
+// A deployment-owned (editable) path: relative or ${DEPLOYMENT_DIR}-anchored,
+// not an oci:// reference.
+function isOwnedPath(location) {
+    return typeof location === "string" && !location.startsWith("oci://");
+}
+
+// Parse a `key = "value"` line, returning the string value when the key matches.
+function keyStringValue(line, key) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith(key)) return null;
+    const rest = trimmed.slice(key.length).trim();
+    if (!rest.startsWith("=")) return null;
+    const value = rest.slice(1).trim();
+    if (value.length < 2 || value[0] !== '"' || value[value.length - 1] !== '"') return null;
+    return value.slice(1, -1);
+}
+
+function assembleToml(draft) {
+    const parts = draft.blocks.map((b) => b.text);
+    if (draft.preamble) parts.unshift(draft.preamble);
+    return parts.join("\n");
+}
+
+function componentSummary(draft) {
+    return draft.blocks.map((b) => ({
+        section: b.section,
+        id: b.id,
+        location: b.location || null,
+        has_script: b.hasScript,
     }));
-    // The structural manifest is a synthetic, read-only file.
-    entries.unshift({ path: "deployment.toml", read_only: true, components: ["(structure)"] });
-    return entries;
+}
+
+function resetDraft(draft, preamble, blocks, baseId, activeId) {
+    draft.preamble = preamble;
+    draft.blocks = blocks;
+    draft.baseDeploymentId = baseId;
+    draft.activeDeploymentId = activeId;
+    draft.editedFiles = {};
+    draft.dirty = [];
 }
 
 function deploymentCheckout(name, args, draft) {
+    rejectUnknownArgs(args, ["deployment_id", "from_scratch"], "deployment_checkout");
+    if (args.from_scratch) {
+        resetDraft(draft, "", [], null, draft.activeDeploymentId);
+        draft.checkedOut = true;
+        return ok(name, JSON.stringify({
+            base_deployment_id: null,
+            active_deployment_id: draft.activeDeploymentId,
+            components: [],
+            note: "Empty working copy. Add components with deployment_put_component, then "
+                + "deployment_submit. Each submit stores one intermediate deployment.",
+        }));
+    }
     const json = webapi.deploymentCheckout(optionalString(args.deployment_id));
     const res = JSON.parse(json);
-    if (typeof res.config_json !== "string") throw "checkout returned no config_json";
-    draft.config = JSON.parse(res.config_json);
-    draft.baseDeploymentId = res.deployment_id;
-    draft.activeDeploymentId = res.active_deployment_id;
-    const fs = collectFiles(draft.config);
+    if (typeof res.deployment_toml !== "string") throw "checkout returned no deployment_toml";
+    const split = splitComponents(res.deployment_toml);
+    resetDraft(draft, split.preamble, split.blocks, res.deployment_id, res.active_deployment_id);
+    draft.checkedOut = true;
     return ok(name, JSON.stringify({
         base_deployment_id: draft.baseDeploymentId,
         active_deployment_id: draft.activeDeploymentId,
-        components: componentCounts(draft.config),
-        files: fileListing(fs),
-        collisions: fs.collisions,
-        note: "Read/edit source files with deployment_read_file / deployment_write_file. "
-            + "Change structure with deployment_add_component / deployment_remove_component. "
-            + "Change exec/retry config (lock_expiry, max_retries, ...) with deployment_set_exec. "
-            + "deployment.toml is a read-only structural view. Finish with deployment_push.",
+        components: componentSummary(draft),
+        note: "Read a component with deployment_read_component (returns its TOML and, for "
+            + "owned JS/exec components, the script body). Change exactly one component with "
+            + "deployment_put_component / deployment_remove_component, then deployment_submit "
+            + "to store an intermediate deployment. Activate with deployment_activate.",
     }));
 }
 
-function deploymentListFiles(name, draft) {
+function deploymentListComponents(name, draft) {
     requireDraft(draft);
-    return ok(name, JSON.stringify({ files: fileListing(collectFiles(draft.config)) }));
-}
-
-function deploymentReadFile(name, args, draft) {
-    requireDraft(draft);
-    const path = requireString(args.path, "path");
-    if (path === "deployment.toml") {
-        return ok(name, JSON.stringify({ path, content: renderDeploymentToml(draft.config) }));
-    }
-    const fs = collectFiles(draft.config);
-    if (!(path in fs.files)) throw `unknown file: ${path}`;
     return ok(name, JSON.stringify({
-        path,
-        read_only: fs.readonly.has(path),
-        components: fs.refs[path] || [],
-        content: fs.files[path],
+        base_deployment_id: draft.baseDeploymentId,
+        components: componentSummary(draft),
+        pending_changes: draft.dirty,
     }));
 }
 
-function deploymentWriteFile(name, args, draft) {
-    requireDraft(draft);
-    const path = requireString(args.path, "path");
-    if (typeof args.content !== "string") throw "content is required";
-    if (path === "deployment.toml") {
-        throw "deployment.toml is read-only; change structure with deployment_add_component / deployment_remove_component, or exec/retry config with deployment_set_exec";
-    }
-    const fs = collectFiles(draft.config);
-    if (fs.readonly.has(path)) throw `${path} is a read-only backtrace source`;
-    if (!(path in fs.files)) throw `unknown file: ${path}; add the component first with deployment_add_component`;
-    const updated = setFileContent(draft.config, path, args.content);
-    return ok(name, JSON.stringify({ path, bytes: args.content.length, updated_components: updated }));
+function findBlock(draft, section, id) {
+    return draft.blocks.findIndex((b) => b.section === section && b.id === id);
 }
 
-// Update every owned script location that points at `path`, returning the
-// affected component labels. Digests are cleared so submit recomputes them.
-function setFileContent(config, path, content) {
-    const updated = [];
-    for (const { key, idField } of SCRIPT_ARRAYS) {
-        for (const item of config[key] || []) {
-            const loc = item && item.location && item.location.content;
-            if (loc && loc.file_name === path) {
-                loc.content = content;
-                if ("content_digest" in item) item.content_digest = null;
-                if ("component_digest" in item) item.component_digest = null;
-                updated.push(componentLabel(item, idField));
-            }
-        }
-    }
-    return updated;
-}
-
-function deploymentAddComponent(name, args, draft) {
+function deploymentReadComponent(name, args, draft) {
     requireDraft(draft);
-    rejectUnknownArgs(args, [
-        "kind", "name", "ffqn", "source", "params", "return_type",
-        "routes", "allowed_hosts", "env_vars",
-    ], "deployment_add_component");
-    const kind = requireString(args.kind, "kind");
-    const source = requireString(args.source, "source");
-    const componentName = requireString(args.name, "name");
-    const spec = {
-        js_activity: { key: "activities_js", idField: "ffqn" },
-        js_workflow: { key: "workflows_js", idField: "ffqn" },
-        js_webhook: { key: "webhooks_js", idField: "name" },
-    }[kind];
-    if (!spec) throw "kind must be js_activity, js_workflow, or js_webhook";
-    const list = requireArray(draft.config[spec.key], spec.key);
-
-    const ffqn = kind === "js_webhook" ? null : requireString(args.ffqn, "ffqn");
-    const index = kind === "js_webhook"
-        ? list.findIndex((item) => item?.name === componentName)
-        : list.findIndex((item) => item?.ffqn === ffqn);
-    if (kind !== "js_webhook") {
-        const collision = list.findIndex((item, i) => i !== index && item?.name === componentName);
-        if (collision !== -1) throw `name already belongs to ${list[collision].ffqn}`;
-    }
-    const previous = index === -1 ? null : list[index];
-    const template = previous || list[0];
-    if (!template) throw `deployment has no ${spec.key} defaults to base a new component on`;
-
-    // Replacing an existing component keeps its source file_name; otherwise the
-    // body lands in a fresh "<name>.js". Never silently rename on replace.
-    const location = inlineSource(componentName, source, previous);
-    let next;
-    if (kind === "js_activity") {
-        next = {
-            ...template, name: componentName, location,
-            content_digest: null, component_digest: null, ffqn,
-            params: arrayArgOr(args.params, previous?.params),
-            env_vars: arrayArgOr(args.env_vars, previous?.env_vars),
-            allowed_hosts: allowedHostsArgOr(args.allowed_hosts, previous?.allowed_hosts),
-            return_type: stringArg(args.return_type, previous?.return_type || "result"),
-        };
-    } else if (kind === "js_workflow") {
-        next = {
-            ...template, name: componentName, location,
-            content_digest: null, component_digest: null, ffqn,
-            params: arrayArgOr(args.params, previous?.params),
-            return_type: stringArg(args.return_type, previous?.return_type || "result"),
-        };
-    } else {
-        const routes = arrayArgOr(args.routes, previous?.routes);
-        if (routes.length === 0) throw "routes must contain at least one route";
-        next = {
-            ...template, name: componentName, location,
-            content_digest: null, routes,
-            env_vars: arrayArgOr(args.env_vars, previous?.env_vars),
-            allowed_host: allowedHostsArgOr(args.allowed_hosts, previous?.allowed_host),
-        };
-    }
-    const action = applyUpsert(list, index, next);
-    return ok(name, JSON.stringify({ action, kind, id: ffqn || componentName, file: location.content.file_name }));
-}
-
-// Editable execution/retry knobs and where each lives on the canonical
-// component: `lock_expiry`/`tick_sleep`/`batch_size`/`instance_limiter` sit in
-// the `exec` sub-object; the rest are top-level fields. These are config-only
-// (they do not change the compiled artifact), so there is no source to re-supply.
-const EXEC_FIELDS = {
-    lock_expiry: { in: "exec", kind: "duration" },
-    tick_sleep: { in: "exec", kind: "duration" },
-    batch_size: { in: "exec", kind: "u32" },
-    instance_limiter: { in: "exec", kind: "limiter" },
-    max_retries: { in: "top", kind: "u32" },
-    retry_exp_backoff: { in: "top", kind: "duration" },
-    max_output_bytes: { in: "top", kind: "u32" },
-    forward_stdout: { in: "top", kind: "string" },
-    forward_stderr: { in: "top", kind: "string" },
-    logs_store_min_level: { in: "top", kind: "string" },
-};
-
-function deploymentSetExec(name, args, draft) {
-    requireDraft(draft);
-    rejectUnknownArgs(args, ["kind", "id", ...Object.keys(EXEC_FIELDS)], "deployment_set_exec");
-    const kind = requireString(args.kind, "kind");
+    rejectUnknownArgs(args, ["section", "id"], "deployment_read_component");
+    const section = requireString(args.section, "section");
     const id = requireString(args.id, "id");
-    const spec = {
-        js_activity: { key: "activities_js", matches: (item) => item?.ffqn === id },
-        js_workflow: { key: "workflows_js", matches: (item) => item?.ffqn === id },
-        js_webhook: { key: "webhooks_js", matches: (item) => item?.name === id },
-    }[kind];
-    if (!spec) throw "kind must be js_activity, js_workflow, or js_webhook";
-    const list = requireArray(draft.config[spec.key], spec.key);
-    const item = list.find(spec.matches);
-    if (!item) throw `no ${kind} with id ${id}; check the FFQN/name (list with deployment.toml)`;
+    const index = findBlock(draft, section, id);
+    if (index === -1) throw `no ${section} component with id ${id}; list with deployment_list_components`;
+    const block = draft.blocks[index];
+    const result = { section, id, location: block.location || null, toml: block.text };
+    if (block.hasScript) {
+        result.script = readScript(draft, block);
+        result.content_digest = block.digest || null;
+    }
+    return ok(name, JSON.stringify(result));
+}
 
-    const changed = {};
-    for (const [field, meta] of Object.entries(EXEC_FIELDS)) {
-        if (!(field in args) || args[field] === undefined) continue;
-        const value = coerceExecField(field, meta.kind, args[field]);
-        if (meta.in === "exec") {
-            item.exec = item.exec || {};
-            item.exec[field] = value;
-        } else {
-            item[field] = value;
-        }
-        changed[field] = value;
+// Return the owned script body for a block: a pending edit if present, else the
+// CAS blob named by its content_digest.
+function readScript(draft, block) {
+    if (block.location in draft.editedFiles) return draft.editedFiles[block.location];
+    if (!block.digest) return "";   // newly added, no digest yet
+    return webapi.deploymentReadBlob(block.digest);
+}
+
+function deploymentPutComponent(name, args, draft) {
+    requireDraft(draft);
+    rejectUnknownArgs(args, ["section", "id", "toml", "script"], "deployment_put_component");
+    const section = requireString(args.section, "section");
+    const id = requireString(args.id, "id");
+    const tomlText = requireString(args.toml, "toml");
+
+    const parsed = splitComponents(tomlText);
+    if (parsed.blocks.length !== 1 || parsed.preamble.trim()) {
+        throw "toml must contain exactly one [[section]] component block";
     }
-    if (Object.keys(changed).length === 0) {
-        throw `no editable fields supplied; provide one of: ${Object.keys(EXEC_FIELDS).join(", ")}`;
+    const block = parsed.blocks[0];
+    if (block.section !== section) throw `toml section [[${block.section}]] does not match section ${section}`;
+    if (block.id !== id) throw `toml component id ${block.id} does not match id ${id}`;
+
+    const hasScript = typeof args.script === "string";
+    if (hasScript) {
+        if (!block.location) throw 'toml must set location = "<path>" to attach a script';
+        if (!isOwnedPath(block.location)) throw `location ${block.location} is not a deployment-owned path`;
     }
+
+    const key = componentKey(section, id);
+    guardSingleChange(draft, key);
+
+    const index = findBlock(draft, section, id);
+    const action = index === -1 ? "added" : "replaced";
+    if (index === -1) draft.blocks.push(block);
+    else draft.blocks[index] = block;
+    if (hasScript) draft.editedFiles[block.location] = args.script;
+    markDirty(draft, key);
+
     return ok(name, JSON.stringify({
-        action: "updated", kind, id, changed,
-        effective: {
-            exec: item.exec, max_retries: item.max_retries,
-            retry_exp_backoff: item.retry_exp_backoff, max_output_bytes: item.max_output_bytes,
-            forward_stdout: item.forward_stdout, forward_stderr: item.forward_stderr,
-            logs_store_min_level: item.logs_store_min_level,
-        },
+        action, section, id, location: block.location || null,
+        script_attached: hasScript, pending_changes: draft.dirty,
     }));
-}
-
-const DURATION_UNITS = ["milliseconds", "seconds", "minutes", "hours", "days"];
-
-function coerceExecField(field, kind, value) {
-    switch (kind) {
-        case "duration":
-            return durationArg(value, field);
-        case "u32":
-            if (!Number.isFinite(value) || value < 0) throw `${field} must be a non-negative integer`;
-            return Math.trunc(value);
-        case "limiter":
-            if (value === "unlimited") return "unlimited";
-            if (Number.isFinite(value) && value >= 0) return Math.trunc(value);
-            throw `${field} must be "unlimited" or a non-negative integer`;
-        case "string":
-            return requireString(value, field);
-        default:
-            return value;
-    }
-}
-
-function durationArg(value, field) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-        throw `${field} must be an object like { "seconds": 30 } (units: ${DURATION_UNITS.join(", ")})`;
-    }
-    const out = {};
-    for (const [unit, n] of Object.entries(value)) {
-        if (!DURATION_UNITS.includes(unit)) {
-            throw `${field}: unknown unit "${unit}"; use one of ${DURATION_UNITS.join(", ")}`;
-        }
-        if (!Number.isFinite(n) || n < 0) throw `${field}.${unit} must be a non-negative number`;
-        out[unit] = Math.trunc(n);
-    }
-    if (Object.keys(out).length === 0) {
-        throw `${field} needs at least one unit (${DURATION_UNITS.join(", ")})`;
-    }
-    return out;
 }
 
 function deploymentRemoveComponent(name, args, draft) {
     requireDraft(draft);
-    rejectUnknownArgs(args, ["kind", "id"], "deployment_remove_component");
-    const kind = requireString(args.kind, "kind");
+    rejectUnknownArgs(args, ["section", "id"], "deployment_remove_component");
+    const section = requireString(args.section, "section");
     const id = requireString(args.id, "id");
-    const spec = {
-        js_activity: { key: "activities_js", matches: (item) => item?.ffqn === id },
-        js_workflow: { key: "workflows_js", matches: (item) => item?.ffqn === id },
-        js_webhook: { key: "webhooks_js", matches: (item) => item?.name === id },
-    }[kind];
-    if (!spec) throw "kind must be js_activity, js_workflow, or js_webhook";
-    const list = requireArray(draft.config[spec.key], spec.key);
-    const index = list.findIndex(spec.matches);
-    if (index === -1) return ok(name, JSON.stringify({ action: "already_absent", kind, id }));
-    list.splice(index, 1);
-    return ok(name, JSON.stringify({ action: "removed", kind, id }));
+    const index = findBlock(draft, section, id);
+    if (index === -1) return ok(name, JSON.stringify({ action: "already_absent", section, id }));
+    const key = componentKey(section, id);
+    guardSingleChange(draft, key);
+    const [removed] = draft.blocks.splice(index, 1);
+    if (removed.location) delete draft.editedFiles[removed.location];
+    markDirty(draft, key);
+    return ok(name, JSON.stringify({ action: "removed", section, id, pending_changes: draft.dirty }));
 }
 
-function deploymentPush(name, args, draft) {
-    requireDraft(draft);
-    const mode = requireString(args.mode, "mode");
-    if (!["submit", "enqueue", "apply"].includes(mode)) {
-        throw "mode must be submit, enqueue, or apply";
+// Enforce one component changed per intermediate deployment, so the server
+// validates a small diff. Repeated edits to the same component are allowed.
+function guardSingleChange(draft, key) {
+    if (draft.dirty.length > 0 && !draft.dirty.includes(key)) {
+        throw `only one component may change per deployment; submit the pending change to ${draft.dirty[0]} first, then edit ${key}`;
     }
+}
+
+function markDirty(draft, key) {
+    if (!draft.dirty.includes(key)) draft.dirty.push(key);
+}
+
+function deploymentSubmit(name, args, draft) {
+    requireDraft(draft);
+    rejectUnknownArgs(args, ["description", "allow_missing_runtime_config", "deployment_id"], "deployment_submit");
     const description = requireString(args.description, "description");
-    const verify = Boolean(args.verify);
+    const allowMissing = Boolean(args.allow_missing_runtime_config);
     const requestedId = optionalString(args.deployment_id) || "";
 
-    const configJson = JSON.stringify(prepareForSubmit(draft.config));
-    const id = webapi.deploymentSubmit(configJson, description, verify, requestedId);
+    const toml = assembleToml(draft);
+    // Only ship blobs for files still referenced by a block.
+    const locations = new Set(draft.blocks.map((b) => b.location).filter(Boolean));
+    const editedFiles = Object.entries(draft.editedFiles)
+        .filter(([path]) => locations.has(path))
+        .map(([path, content]) => ({ path, content }));
 
-    if (mode === "submit") {
-        return ok(name, JSON.stringify({ deployment_id: id, mode, status: "submitted (inactive)" }));
+    const resJson = webapi.deploymentSubmit(
+        toml, JSON.stringify(editedFiles), description, allowMissing, requestedId,
+    );
+    const res = JSON.parse(resJson);
+    const deploymentId = res.deployment_id;
+
+    // Rebase the working copy onto the stored deployment so editing continues
+    // from the just-submitted state (digests filled, blobs now in the CAS).
+    if (typeof res.deployment_toml === "string") {
+        const split = splitComponents(res.deployment_toml);
+        resetDraft(draft, split.preamble, split.blocks, deploymentId, draft.activeDeploymentId);
+    } else {
+        resetDraft(draft, draft.preamble, draft.blocks, deploymentId, draft.activeDeploymentId);
     }
+    return ok(name, JSON.stringify({ deployment_id: deploymentId, status: "submitted (inactive)" }));
+}
+
+function deploymentActivate(name, args, draft) {
+    rejectUnknownArgs(args, ["deployment_id", "mode", "allow_missing_runtime_config", "summary"], "deployment_activate");
+    const mode = requireString(args.mode, "mode");
+    if (!["enqueue", "apply"].includes(mode)) throw "mode must be enqueue or apply";
+    const deploymentId = optionalString(args.deployment_id) || draft.baseDeploymentId;
+    if (!deploymentId) throw "deployment_id is required (or submit a deployment first)";
+    const allowMissing = Boolean(args.allow_missing_runtime_config);
+
     if (mode === "enqueue") {
-        const sw = webapi.deploymentSwitch(id, verify);
-        return ok(name, JSON.stringify({ deployment_id: id, mode, status: "enqueued for next restart", switch: sw }));
+        const sw = webapi.deploymentSwitch(deploymentId, allowMissing);
+        return ok(name, JSON.stringify({ deployment_id: deploymentId, mode, status: "enqueued for next restart", switch: sw }));
     }
     // apply: durable human gate, then schedule the hot switch out of process (a
     // synchronous switch from inside this activity would deadlock the executor).
-    deploy.confirmApply(id, description);
-    const applied = webapi.applyDeployment(id);
-    return ok(name, JSON.stringify({ deployment_id: id, mode, status: "hot reload scheduled", apply: applied }));
-}
-
-// Clone the canonical config for submission, clearing the recomputable digests
-// of owned script components so the server recomputes them from the (possibly
-// edited) inline content. WASM/OCI/stub/cron components are left untouched.
-function prepareForSubmit(config) {
-    const clone = JSON.parse(JSON.stringify(config));
-    for (const { key } of SCRIPT_ARRAYS) {
-        for (const item of clone[key] || []) {
-            if ("content_digest" in item) item.content_digest = null;
-            if ("component_digest" in item) item.component_digest = null;
-        }
-    }
-    return clone;
-}
-
-function applyUpsert(list, index, next) {
-    if (index === -1) {
-        list.push(next);
-        return "added";
-    }
-    if (JSON.stringify(list[index]) === JSON.stringify(next)) return "unchanged";
-    list[index] = next;
-    return "replaced";
-}
-
-function inlineSource(name, source, previous) {
-    const fileName = previous?.location?.content?.file_name || `${name}.js`;
-    return { content: { content: source, file_name: fileName } };
+    // A hot redeploy is always strict, so allow_missing_runtime_config is ignored.
+    const summary = optionalString(args.summary) || `hot redeploy ${deploymentId}`;
+    deploy.confirmApply(deploymentId, summary);
+    const applied = webapi.applyDeployment(deploymentId);
+    return ok(name, JSON.stringify({ deployment_id: deploymentId, mode, status: "hot reload scheduled", apply: applied }));
 }
 
 // Reject argument keys the tool does not consume, so a misnamed or unsupported
@@ -746,136 +681,8 @@ function rejectUnknownArgs(args, allowed, tool) {
     }
 }
 
-// --- Read-only `deployment.toml` rendering -----------------------------------
-// A structural view of the canonical config with source bodies elided and each
-// owned location shown as its relative path. It mirrors `deployment get`'s TOML
-// closely enough to orient the agent; editing happens through the typed ops.
-function renderDeploymentToml(config) {
-    try {
-        return serializeToml(toTomlShape(config));
-    } catch (e) {
-        return `# could not render TOML (${String(e)}); structural JSON view:\n`
-            + JSON.stringify(config, tomlReplacer, 2);
-    }
-}
-
-const TOML_ORDER = [
-    "activities_wasm", "activities_stub", "activities_external",
-    "activities_js", "activities_exec",
-    "workflows_wasm", "workflows_js", "webhooks_wasm", "webhooks_js", "crons",
-];
-
-function toTomlShape(config) {
-    const out = {};
-    for (const key of TOML_ORDER) {
-        const arr = config[key];
-        if (!Array.isArray(arr) || arr.length === 0) continue;
-        const isScript = SCRIPT_ARRAYS.some((s) => s.key === key);
-        const isBacktrace = BACKTRACE_ARRAYS.some((s) => s.key === key);
-        out[key] = arr.map((item) => tomlComponent(item, isScript, isBacktrace));
-    }
-    return out;
-}
-
-function tomlComponent(item, isScript, isBacktrace) {
-    const clone = JSON.parse(JSON.stringify(item));
-    if (isScript) {
-        clone.location = locationString(clone.location);
-        delete clone.content;
-    }
-    if (isBacktrace && clone.backtrace && clone.backtrace.frame_files_to_sources) {
-        const map = {};
-        for (const [k, v] of Object.entries(clone.backtrace.frame_files_to_sources)) {
-            map[k] = v && typeof v === "object" ? v.file_name : v;
-        }
-        clone.backtrace = { frame_files_to_sources: map };
-    }
-    return pruneEmpty(clone);
-}
-
-function locationString(loc) {
-    if (!loc || typeof loc !== "object") return loc;
-    if (loc.content) return loc.content.file_name;
-    if (loc.external_path) return loc.external_path.path;
-    if (loc.oci) return loc.oci.image;
-    return JSON.stringify(loc);
-}
-
-// Drop null/undefined and empty containers so the rendered TOML stays readable.
-function pruneEmpty(value) {
-    if (Array.isArray(value)) {
-        const arr = value.map(pruneEmpty).filter((v) => v !== undefined);
-        return arr;
-    }
-    if (value && typeof value === "object") {
-        const out = {};
-        for (const [k, v] of Object.entries(value)) {
-            const pruned = pruneEmpty(v);
-            if (pruned === undefined || pruned === null) continue;
-            if (Array.isArray(pruned) && pruned.length === 0) continue;
-            if (pruned && typeof pruned === "object" && !Array.isArray(pruned) && Object.keys(pruned).length === 0) continue;
-            out[k] = pruned;
-        }
-        return out;
-    }
-    return value === null ? undefined : value;
-}
-
-function serializeToml(shape) {
-    const lines = [];
-    for (const key of Object.keys(shape)) {
-        for (const el of shape[key]) {
-            lines.push(`[[${key}]]`);
-            for (const [k, v] of Object.entries(el)) {
-                if (v === null || v === undefined) continue;
-                lines.push(`${tomlKey(k)} = ${tomlValue(v)}`);
-            }
-            lines.push("");
-        }
-    }
-    return `${lines.join("\n").trim()}\n`;
-}
-
-function tomlValue(v) {
-    if (typeof v === "string") return JSON.stringify(v);
-    if (typeof v === "number" || typeof v === "boolean") return String(v);
-    if (Array.isArray(v)) return `[${v.map(tomlValue).join(", ")}]`;
-    if (v && typeof v === "object") {
-        const parts = Object.entries(v)
-            .filter(([, x]) => x !== null && x !== undefined)
-            .map(([k, x]) => `${tomlKey(k)} = ${tomlValue(x)}`);
-        return parts.length ? `{ ${parts.join(", ")} }` : "{}";
-    }
-    return '""';
-}
-
-function tomlKey(k) {
-    return /^[A-Za-z0-9_-]+$/.test(k) ? k : JSON.stringify(k);
-}
-
-function tomlReplacer(key, value) {
-    // In the JSON fallback, elide large inline source bodies.
-    if (key === "content" && typeof value === "string" && value.length > 200) {
-        return `<${value.length} bytes elided>`;
-    }
-    return value;
-}
-
 function arrayArgOr(value, fallback) {
     return Array.isArray(value) ? value : (Array.isArray(fallback) ? fallback : []);
-}
-
-function allowedHostsArgOr(value, fallback) {
-    if (!Array.isArray(value)) return Array.isArray(fallback) ? fallback : [];
-    return value.map((host) => ({
-        pattern: requireString(host?.pattern, "allowed_hosts[].pattern"),
-        methods: Array.isArray(host?.methods) ? host.methods : [],
-        secrets: null,
-    }));
-}
-
-function stringArg(value, fallback) {
-    return typeof value === "string" && value ? value : fallback;
 }
 
 function paginationDirection(value) {
@@ -884,27 +691,6 @@ function paginationDirection(value) {
         throw "direction must be older or newer";
     }
     return value;
-}
-
-function requireArray(value, field) {
-    if (!Array.isArray(value)) throw `deployment config has no ${field} array`;
-    return value;
-}
-
-function componentCounts(config) {
-    const count = (key) => (Array.isArray(config[key]) ? config[key].length : 0);
-    return {
-        activities_js: count("activities_js"),
-        activities_exec: count("activities_exec"),
-        activities_wasm: count("activities_wasm"),
-        activities_stub: count("activities_stub"),
-        activities_external: count("activities_external"),
-        workflows_js: count("workflows_js"),
-        workflows_wasm: count("workflows_wasm"),
-        webhooks_js: count("webhooks_js"),
-        webhooks_wasm: count("webhooks_wasm"),
-        crons: count("crons"),
-    };
 }
 
 function ok(name, jsonString) {

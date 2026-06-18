@@ -362,47 +362,73 @@ async function loadPendingConfirms(workflowId) {
         if (deploymentId) {
             try {
                 const dep = await obeliskJson(`/v1/deployments/${encodeURIComponent(deploymentId)}`);
-                diff = diffSources(currentSources, collectSources(dep.config_json));
+                diff = diffSources(currentSources, await collectSources(dep.deployment_toml));
             } catch (err) { diff = { error: String(err) }; }
         }
         return { id: e.execution_id, deployment_id: deploymentId, summary, diff };
     }));
 }
 
-// Sources of the currently active deployment, keyed by file name. Returns {}
-// if there is no current deployment or it cannot be read. /v1/deployment-id
-// returns the active id as a JSON string; its config lives in the per-id GET.
+// Sources of the currently active deployment, keyed by location. Returns {} if
+// there is no current deployment or it cannot be read. /v1/deployment-id returns
+// the active id as a JSON string; its manifest lives in the per-id GET.
 async function loadCurrentSources() {
     try {
         const id = await obeliskJson(`/v1/deployment-id`);
         if (!id || typeof id !== "string") return {};
         const dep = await obeliskJson(`/v1/deployments/${encodeURIComponent(id)}`);
-        return collectSources(dep.config_json);
+        return await collectSources(dep.deployment_toml);
     } catch (_) { return {}; }
 }
 
-// Extract { fileName -> source } from a deployment's config_json. JS components
-// live under the *_js arrays; each carries its source either inline at the top
-// level (`content`) or under `location.content.{file_name, content}`.
-function collectSources(configJson) {
+// Extract { location -> source } for a deployment's owned JS/exec components. The
+// manifest references each owned source by `location` + `content_digest`; the
+// body is read from the content-addressed store.
+async function collectSources(deploymentToml) {
     const out = {};
-    let cfg;
-    try { cfg = typeof configJson === "string" ? JSON.parse(configJson) : configJson; }
-    catch (_) { return out; }
-    if (!cfg || typeof cfg !== "object") return out;
-    for (const [key, value] of Object.entries(cfg)) {
-        if (!key.endsWith("_js") || !Array.isArray(value)) continue;
-        for (const comp of value) {
-            if (!comp || typeof comp !== "object") continue;
-            const inline = comp.location?.content;
-            const name = (inline && typeof inline.file_name === "string" && inline.file_name)
-                || comp.name || comp.ffqn || `${key}[?]`;
-            const src = (inline && typeof inline.content === "string") ? inline.content
-                : (typeof comp.content === "string" ? comp.content : null);
-            if (typeof src === "string") out[String(name)] = src;
-        }
+    if (typeof deploymentToml !== "string") return out;
+    for (const ref of ownedScriptRefs(deploymentToml)) {
+        try {
+            const resp = await fetch(`${apiBase()}/v1/files/${encodeURIComponent(ref.digest)}`);
+            if (resp.ok) out[ref.location] = await resp.text();
+        } catch (_) { /* skip an unreadable blob */ }
     }
     return out;
+}
+
+// Scan top-level component blocks for owned sources: a non-oci `location` paired
+// with a `content_digest` in the same main table.
+function ownedScriptRefs(toml) {
+    const refs = [];
+    let location = null;
+    let digest = null;
+    let inTable = false;
+    const flush = () => {
+        if (location && digest && !location.startsWith("oci://")) refs.push({ location, digest });
+        location = null;
+        digest = null;
+    };
+    for (const line of toml.split("\n")) {
+        const t = line.trim();
+        if (t.startsWith("[[") && !t.includes(".")) { flush(); inTable = true; continue; }
+        if (t.startsWith("[")) { inTable = false; continue; }   // sub-table: skip its keys
+        if (!inTable) continue;
+        const loc = tomlString(t, "location");
+        if (loc !== null) location = loc;
+        const dig = tomlString(t, "content_digest");
+        if (dig !== null) digest = dig;
+    }
+    flush();
+    return refs;
+}
+
+function tomlString(line, key) {
+    if (!line.startsWith(key)) return null;
+    const rest = line.slice(key.length).trim();
+    if (!rest.startsWith("=")) return null;
+    const v = rest.slice(1).trim();
+    if (v.length < 2 || v[0] !== '"' || v[v.length - 1] !== '"') return null;
+    return v.slice(1, -1);
 }
 
 // Compare two { fileName -> source } maps. Added and removed entries include
@@ -715,18 +741,41 @@ async function submit(request) {
 }
 
 // Pause or unpause a run via the native execution endpoints. A paused execution
-// reports pending_state.status == "paused".
+// reports pending_state.status == "paused". Obelisk pauses a single execution,
+// but the agent loop runs in a nested child workflow (the `n:session_1`
+// `workflow.agent-loop` execution), so pausing only the root leaves the session
+// running. Pause/unpause every non-terminal workflow in the run as well.
 async function pauseExecution(id, unpause) {
     if (!id) return jsonError(400, "missing run id");
     const verb = unpause ? "unpause" : "pause";
-    const resp = await fetch(
-        `${apiBase()}/v1/executions/${encodeURIComponent(id)}/${verb}`,
-        { method: "PUT" },
-    );
-    if (!resp.ok) {
-        return jsonError(502, `${verb} failed: HTTP ${resp.status} ${await resp.text()}`);
+    const targets = [id, ...await childWorkflowIds(id)];
+    const failures = [];
+    for (const target of targets) {
+        const resp = await fetch(
+            `${apiBase()}/v1/executions/${encodeURIComponent(target)}/${verb}`,
+            { method: "PUT" },
+        );
+        if (!resp.ok) failures.push(`${target}: HTTP ${resp.status} ${await resp.text()}`);
     }
-    return jsonResponse({ ok: true });
+    if (failures.length) {
+        return jsonError(502, `${verb} failed: ${failures.join("; ")}`);
+    }
+    return jsonResponse({ ok: true, paused: targets });
+}
+
+// Non-terminal nested workflow executions of a run (e.g. the agent-loop session
+// child). Excludes the run itself; activities/stubs are not paused.
+async function childWorkflowIds(runId) {
+    let executions;
+    try {
+        executions = await obeliskJson(
+            `/v1/executions?execution_id_prefix=${encodeURIComponent(runId)}`
+            + "&show_derived=true&hide_finished=true&length=200",
+        );
+    } catch (_) { return []; }
+    return executions
+        .filter((e) => e?.execution_id !== runId && e?.component_type === "workflow")
+        .map((e) => e.execution_id);
 }
 
 function isTerminalStatus(status) {

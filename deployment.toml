@@ -264,11 +264,13 @@ location = "${DEPLOYMENT_DIR}/activity/tools/current-deployment.js"
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 
-# --- Deployment editing: checkout -> edit files -> push -----------------------
-# The workflow holds the checked-out canonical config in memory and exposes its
-# source bodies as editable files (see workflow/agent-loop.js). These activities
-# are the durable I/O boundary: fetch the deployment, submit the reassembled
-# config, and enqueue it. A hot redeploy goes through tool_apply_deployment.
+# --- Deployment editing: checkout -> edit one component -> submit -------------
+# The workflow holds the checked-out deployment.toml in memory, split into
+# per-component blocks, and edits one component at a time (see
+# workflow/agent-loop.js). These activities are the durable I/O boundary: fetch
+# the manifest, read owned file blobs from the CAS, and submit the manifest as a
+# new inactive deployment (digests filled, CAS-efficient preflight + multipart
+# retry). A hot redeploy goes through tool_apply_deployment.
 
 [[activity_js]]
 name = "tool_deployment_checkout"
@@ -283,15 +285,32 @@ pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
 
 [[activity_js]]
+name = "tool_deployment_read_blob"
+ffqn = "obelisk-agent:tools/webapi.deployment-read-blob"
+params = [
+  { name = "digest", type = "string" },
+]
+return_type = "result<string, string>"
+location = "${DEPLOYMENT_DIR}/activity/tools/deployment-read-blob.js"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+
+[[activity_js]]
 name = "tool_deployment_submit"
 ffqn = "obelisk-agent:tools/webapi.deployment-submit"
 params = [
-  { name = "config-json",   type = "string" },
-  { name = "description",    type = "string" },
-  { name = "verify",        type = "bool" },
-  { name = "deployment-id",  type = "string" },
+  { name = "deployment-toml",              type = "string" },
+  { name = "edited-files-json",            type = "string" },
+  { name = "description",                   type = "string" },
+  { name = "allow-missing-runtime-config", type = "bool" },
+  { name = "deployment-id",                type = "string" },
 ]
 return_type = "result<string, string>"
+# Submit verifies the whole deployment (compile + link every component) before
+# persisting, which far exceeds the 1s default lock.
+exec.lock_expiry.minutes = 5
+max_retries = 0
 location = "${DEPLOYMENT_DIR}/activity/tools/deployment-submit.js"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
@@ -301,10 +320,12 @@ methods = ["POST"]
 name = "tool_deployment_switch"
 ffqn = "obelisk-agent:tools/webapi.deployment-switch"
 params = [
-  { name = "deployment-id", type = "string" },
-  { name = "verify",       type = "bool" },
+  { name = "deployment-id",                type = "string" },
+  { name = "allow-missing-runtime-config", type = "bool" },
 ]
 return_type = "result<string, string>"
+# A cold switch re-verifies (compile + link) before enqueuing.
+exec.lock_expiry.minutes = 5
 location = "${DEPLOYMENT_DIR}/activity/tools/deployment-switch.js"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
