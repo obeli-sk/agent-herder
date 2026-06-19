@@ -527,8 +527,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/github/create-pr.js"
-exec.lock_expiry.seconds = 30
-content_digest = "sha256:3c3882760926142c7449146900865d1635b4307cbf4de9146a6a8b5eb435d601"
+exec.lock_expiry.seconds = 60
+content_digest = "sha256:a3bedb61c769df816b3c1188f18321bca6535125b13b8a1f85356b906fe12a1b"
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET", "POST"]

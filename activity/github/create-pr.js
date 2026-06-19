@@ -5,33 +5,36 @@
 export default async function createPr(
     owner, repo, headBranch, baseBranch, title, body,
 ) {
-    if (!owner) throw "owner is required";
-    if (!repo) throw "repo is required";
-    if (!headBranch) throw "head-branch is required";
-    if (!baseBranch) throw "base-branch is required";
-    if (!title) throw "title is required";
+    if (!owner) throw 'owner is required';
+    if (!repo) throw 'repo is required';
+    if (!headBranch) throw 'head-branch is required';
+    if (!baseBranch) throw 'base-branch is required';
+    if (!title) throw 'title is required';
 
-    const token = process.env["AGENT_HERDER_GITHUB_TOKEN"];
-    if (!token) throw "AGENT_HERDER_GITHUB_TOKEN is not set";
+    const token = process.env['AGENT_HERDER_GITHUB_TOKEN'];
+    if (!token) throw 'AGENT_HERDER_GITHUB_TOKEN is not set';
 
     const headers = {
-        accept: "application/vnd.github+json",
+        accept: 'application/vnd.github+json',
         authorization: `Bearer ${token}`,
-        "x-github-api-version": "2022-11-28",
-        "content-type": "application/json",
-        "user-agent": "obelisk-agent-herder",
+        'x-github-api-version': '2022-11-28',
+        'content-type': 'application/json',
+        'user-agent': 'obelisk-agent-herder',
     };
+
+    const openExisting = await findPr(headers, owner, repo, headBranch, baseBranch, 'open');
+    if (openExisting) return openExisting;
 
     const resp = await fetch(
         `https://api.github.com/repos/${owner}/${repo}/pulls`,
         {
-            method: "POST",
+            method: 'POST',
             headers,
             body: JSON.stringify({
                 title,
                 head: headBranch,
                 base: baseBranch,
-                body: body || "",
+                body: body || '',
             }),
         },
     );
@@ -42,23 +45,30 @@ export default async function createPr(
 
     const text = await resp.text();
     if (resp.status === 422) {
-        const existing = await findOpenPr(headers, owner, repo, headBranch, baseBranch);
+        const existing = await findPr(headers, owner, repo, headBranch, baseBranch, 'all');
         if (existing) return existing;
     }
 
     throw `failed to create PR: HTTP ${resp.status}: ${text}`;
 }
 
-async function findOpenPr(headers, owner, repo, headBranch, baseBranch) {
-    const url = new URL(`https://api.github.com/repos/${owner}/${repo}/pulls`);
-    url.searchParams.set("state", "open");
-    url.searchParams.set("head", `${owner}:${headBranch}`);
-    url.searchParams.set("base", baseBranch);
+async function findPr(headers, owner, repo, headBranch, baseBranch, state) {
+    const headValues = [`${owner}:${headBranch}`, headBranch];
+    for (let i = 0; i < headValues.length; i++) {
+        const query = [
+            ['state', state],
+            ['head', headValues[i]],
+            ['base', baseBranch],
+        ].map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join('&');
+        const url = `https://api.github.com/repos/${owner}/${repo}/pulls?${query}`;
 
-    const resp = await fetch(url.toString(), { headers });
-    if (!resp.ok) return null;
+        const resp = await fetch(url, { headers });
+        if (!resp.ok) continue;
 
-    const prs = await resp.json();
-    if (!Array.isArray(prs) || prs.length === 0) return null;
-    return prs[0].html_url || JSON.stringify(prs[0]);
+        const prs = await resp.json();
+        if (Array.isArray(prs) && prs.length > 0) {
+            return prs[0].html_url || JSON.stringify(prs[0]);
+        }
+    }
+    return null;
 }
