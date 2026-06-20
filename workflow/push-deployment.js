@@ -10,27 +10,29 @@ export default function pushDeployment(branchName, prTitle, prBody) {
     if (!prTitle) throw "pr-title is required";
     const body = (typeof prBody === "string" && prBody) ? prBody : "";
 
-    // 1. Discover the live deployment. The webapi activity returns JSON text.
-    const deploymentId = parseJsonString(webapi.currentDeploymentId(), "current deployment id");
+    // 1. Discover the live deployment through the generic fetch tool.
+    const deploymentId = fetchJson("/v1/deployment-id");
+    if (typeof deploymentId !== "string" || !deploymentId) {
+        throw "current deployment id was not a non-empty string";
+    }
     console.log(`Exporting deployment ${deploymentId} to ${OWNER}/${REPO}@${branchName}`);
 
     // 2. Pull the manifest TOML.
-    const depMetaJson = webapi.getDeployment(deploymentId, null, null, null, null);
-    const depMeta = JSON.parse(depMetaJson);
+    const depMeta = fetchJson(`/v1/deployments/${encodeURIComponent(deploymentId)}`);
     const deploymentToml = depMeta.deployment_toml;
     if (typeof deploymentToml !== "string" || !deploymentToml) {
         throw `deployment ${deploymentId} returned no deployment_toml`;
     }
 
-    // 3. Parse (location, selector) tuples for every owned source.
+    // 3. Parse (location, digest) tuples for every owned source.
     const sources = collectSources(deploymentToml);
     console.log(`Found ${sources.length} owned source file(s).`);
 
-    // 4. Fetch each source body up front. webapi.getComponentSource paginates.
+    // 4. Fetch each source body up front through the generic fetch tool.
     const sourceBodies = [];
     for (let i = 0; i < sources.length; i++) {
-        const [location, selector] = sources[i];
-        const text = readSource(deploymentId, selector);
+        const [location, digest] = sources[i];
+        const text = fetchText(`/v1/files/${encodeURIComponent(digest)}`);
         sourceBodies.push([location, text]);
     }
 
@@ -70,10 +72,9 @@ export default function pushDeployment(branchName, prTitle, prBody) {
     return prUrl;
 }
 
-// Walk the manifest and pull out (location, selector) for every owned source.
-// selector prefers ffqn (globally unique), falling back to name (webhook
-// endpoints have no ffqn). Dedupes by location because multiple components may
-// share a file (claude.start and codex.start both point at agent-start.js).
+// Walk the manifest and pull out (location, content_digest) for every owned
+// source. Dedupes by location because multiple components may share a file
+// (claude.start and codex.start both point at agent-start.js).
 function collectSources(toml) {
     const seen = new Set();
     const out = [];
@@ -82,40 +83,32 @@ function collectSources(toml) {
     while ((m = blockRe.exec(toml)) !== null) {
         const block = m[2];
         const locM = block.match(/^\s*location\s*=\s*"([^"]+)"/m);
-        if (!locM) continue;
+        const digestM = block.match(/^\s*content_digest\s*=\s*"([^"]+)"/m);
+        if (!locM || !digestM) continue;
         const location = locM[1];
-        if (seen.has(location)) continue;
-        const ffqnM = block.match(/^\s*ffqn\s*=\s*"([^"]+)"/m);
-        const nameM = block.match(/^\s*name\s*=\s*"([^"]+)"/m);
-        const selector = (ffqnM && ffqnM[1]) || (nameM && nameM[1]);
-        if (!selector) continue;
+        if (location.startsWith("oci://") || seen.has(location)) continue;
         seen.add(location);
-        out.push([location, selector]);
+        out.push([location, digestM[1]]);
     }
     return out;
 }
 
-function readSource(deploymentId, selector) {
-    const CHUNK = 65536;
-    let offset = 0;
-    let body = "";
-    for (;;) {
-        const pageJson = webapi.getComponentSource(deploymentId, selector, offset, CHUNK);
-        const page = JSON.parse(pageJson);
-        body += page.raw_body || "";
-        if (page.next_offset === null || page.next_offset === undefined) break;
-        offset = page.next_offset;
-    }
-    return body;
+function fetchJson(path) {
+    const body = fetchText(path);
+    try { return JSON.parse(body); }
+    catch (e) { throw `${path} returned non-JSON body: ${e.message}`; }
 }
 
-function parseJsonString(value, label) {
-    if (typeof value !== "string") {
-        throw `${label} was not returned as a string`;
+function fetchText(path) {
+    const raw = webapi.fetch("GET", path, null, null);
+    let response;
+    try { response = JSON.parse(raw); }
+    catch (e) { throw `fetch wrapper returned non-JSON result for ${path}: ${e.message}`; }
+    if (!response || typeof response !== "object") {
+        throw `fetch wrapper returned invalid result for ${path}`;
     }
-    const parsed = JSON.parse(value);
-    if (typeof parsed !== "string" || !parsed) {
-        throw `${label} was not a non-empty JSON string`;
+    if (!response.ok) {
+        throw `${path}: HTTP ${response.status}: ${response.body || ""}`;
     }
-    return parsed;
+    return typeof response.body === "string" ? response.body : "";
 }
