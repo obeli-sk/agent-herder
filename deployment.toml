@@ -8,7 +8,7 @@ ffqn = "obelisk-agent:agent/prompt.load-system-prompt"
 params = []
 return_type = "result<string, string>"
 location = "activity/agent-system-prompt.js"
-content_digest = "sha256:e526e87b8db22d86be70cd0f846ae3c29c90819edf89356d2c4e6c6923c9910e"
+content_digest = "sha256:a60a093511dc99a94ae91d298f45c572046ae0850f7a9eaf4d1917d184a0b95a"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
@@ -551,4 +551,22 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "workflow/push-deployment.js"
-content_digest = "sha256:e4935796ed9bae91a6d481df2056546d7430a2cd68e0b9671ecb3874bd3be47b"
+content_digest = "sha256:1811dc43ffe08a2f5f473e3c1a16d6c0554bfbc3d3c8d34f83936461037daa91"
+
+
+
+[[activity_js]]
+name = "tool_fetch"
+ffqn = "obelisk-agent:tools/webapi.fetch"
+params = [
+  { name = "method", type = "string" },
+  { name = "path", type = "string" },
+  { name = "body", type = "option<string>" },
+  { name = "headers-json", type = "option<string>" },
+]
+return_type = "result<string, string>"
+location = "activity/tools/fetch.js"
+content_digest = "sha256:a08ec1488bba0c25e2126764e352e4002d89ae947ad78ae6a36be144844e4e50"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "POST", "PUT", "PATCH", "DELETE"]
