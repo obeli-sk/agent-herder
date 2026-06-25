@@ -10,7 +10,7 @@ const TOOL_SCHEMAS = [
         ffqn_prefix: 'string, optional',
         length: 'u32, optional; default 100',
     }),
-    tool('obelisk.get_function_wit', 'Return the WIT signature for one FFQN. Use it before obelisk.submit when parameter types are not already known.', {
+    tool('obelisk.get_function_wit', 'Return the WIT signature for one FFQN. Use it before native calls or submissions when parameter types are not already known.', {
         ffqn: 'string, required',
     }),
     tool('obelisk.list_executions', 'Page through executions, optionally filtered by function, execution id prefix, component digest, deployment, and state.', {
@@ -40,13 +40,46 @@ const TOOL_SCHEMAS = [
         including_cursor: 'bool, optional',
         length: 'u32, optional; default 200',
     }),
-    tool('obelisk.submit', 'Start a workflow or activity execution by FFQN with WIT-encoded positional parameters.', {
+    tool('obelisk.call', 'Submit a workflow or activity child execution natively and wait for its result.', {
         ffqn: 'string, required',
         params_json: 'string, required; JSON array of positional parameters encoded from the target function WIT, for example "[123,\"name\"]"',
     }, [
         'Call obelisk.get_function_wit first unless the target WIT is already known.',
         'params_json is a string containing the JSON array, not an array value in args.',
+        'Errors include the runtime error and, when available, the expected WIT for the target FFQN.',
     ]),
+    tool('obelisk.submit', 'Compatibility alias for native join-set submission. Creates a join set, submits one child execution, and returns join_set_id plus execution_id without waiting.', {
+        ffqn: 'string, required',
+        params_json: 'string, required; JSON array of positional parameters encoded from the target function WIT, for example "[123,\"name\"]"',
+    }, [
+        'Use obelisk.call for the common submit-and-await case.',
+        'Use obelisk.join_set_join_next or obelisk.join_set_close with the returned join_set_id.',
+    ]),
+    tool('obelisk.join_set_create', 'Create a native workflow join set for running many child executions or delays in parallel.', {}, [
+        'Returns a workflow-local join_set_id handle. This is not an Obelisk execution id.',
+    ]),
+    tool('obelisk.join_set_submit', 'Submit one child workflow or activity execution into an existing native join set.', {
+        join_set_id: 'string, required; handle returned by obelisk.join_set_create or obelisk.submit',
+        ffqn: 'string, required',
+        params_json: 'string, required; JSON array of positional parameters encoded from the target function WIT',
+    }),
+    tool('obelisk.join_set_delay', 'Submit a durable delay into an existing native join set.', {
+        join_set_id: 'string, required; handle returned by obelisk.join_set_create or obelisk.submit',
+        duration: 'record, required; Obelisk duration such as {"seconds": 5}',
+    }),
+    tool('obelisk.join_set_join_next', 'Wait until the next submitted execution or delay in a join set completes.', {
+        join_set_id: 'string, required',
+    }, [
+        'Returns the joined child id/type when available; for executions, use obelisk.get_result with that execution_id if you need to read the final result separately.',
+    ]),
+    tool('obelisk.join_set_join_next_try', 'Poll a join set once without waiting.', {
+        join_set_id: 'string, required',
+    }, [
+        'Returns ready=false when no child has completed yet.',
+    ]),
+    tool('obelisk.join_set_close', 'Close a native join set and release its workflow-local handle.', {
+        join_set_id: 'string, required',
+    }),
     tool('obelisk.get_result', 'Read the final result for a finished execution.', {
         execution_id: 'string, required',
     }),
@@ -123,9 +156,7 @@ function renderToolSchema(t) {
     ];
     if (t.notes.length > 0) {
         lines.push('Notes:');
-        for (const note of t.notes) {
-            lines.push('- ' + note);
-        }
+        for (const note of t.notes) lines.push('- ' + note);
     }
     return lines.join(nl);
 }
@@ -148,8 +179,8 @@ const TOOL_PROMPT = [
 
 const WIT_JSON_MAPPING = [
     '## WIT to JSON Mapping',
-    'Use obelisk.get_function_wit to inspect the target function signature before obelisk.submit when the parameters are not already known.',
-    'Encode obelisk.submit params_json as a JSON array of positional arguments in WIT parameter order.',
+    'Use obelisk.get_function_wit to inspect the target function signature before obelisk.call, obelisk.submit, or obelisk.join_set_submit when the parameters are not already known.',
+    'Encode params_json as a JSON array of positional arguments in WIT parameter order.',
     'WIT kebab-case identifiers become snake_case JSON keys and variant or enum values.',
     'bool maps to JSON true or false.',
     'Integers and floats map to JSON numbers; Obelisk rejects lossy numeric conversions instead of rounding.',
@@ -189,19 +220,10 @@ const SYSTEM_PROMPT = [
 ].join(nl + nl);
 
 export default async function load_system_prompt() {
-    const response = await fetch(OBELISK_DOCS_URL, {
-        headers: { accept: 'text/plain' },
-    });
+    const response = await fetch(OBELISK_DOCS_URL, { headers: { accept: 'text/plain' } });
     if (!response.ok) {
         throw `failed to fetch Obelisk documentation: HTTP ${response.status}: ${await response.text()}`;
     }
     const docs = await response.text();
-    return [
-        SYSTEM_PROMPT,
-        '',
-        '# Obelisk documentation',
-        'The following reference was fetched from ' + OBELISK_DOCS_URL + '.',
-        '',
-        docs,
-    ].join(nl);
+    return [SYSTEM_PROMPT, '', '# Obelisk documentation', 'The following reference was fetched from ' + OBELISK_DOCS_URL + '.', '', docs].join(nl);
 }
