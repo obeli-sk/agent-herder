@@ -8,7 +8,7 @@ ffqn = "obelisk-agent:agent/prompt.load-system-prompt"
 params = []
 return_type = "result<string, string>"
 location = "activity/agent-system-prompt.js"
-content_digest = "sha256:a60a093511dc99a94ae91d298f45c572046ae0850f7a9eaf4d1917d184a0b95a"
+content_digest = "sha256:ccec90ad876aeb180e6509a47f5c76de2c388e17df29e59672388ca5ba0cb616"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
@@ -205,10 +205,10 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/submit.js"
-content_digest = "sha256:9cd2362da8197e12930b3e700d04fea71ca1ef915644541ec3f3dc7b9fe744bb"
+content_digest = "sha256:89cb590d6a7332041046389501ad910e75703f4226f056ede5b30666834da81a"
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["POST"]
+methods = ["GET", "POST"]
 
 [[activity_js]]
 name = "tool_get_result"
