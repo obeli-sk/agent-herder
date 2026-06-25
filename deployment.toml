@@ -8,7 +8,7 @@ ffqn = "obelisk-agent:agent/prompt.load-system-prompt"
 params = []
 return_type = "result<string, string>"
 location = "activity/agent-system-prompt.js"
-content_digest = "sha256:ccec90ad876aeb180e6509a47f5c76de2c388e17df29e59672388ca5ba0cb616"
+content_digest = "sha256:1c3772abfa82a44372a5c4a0896219293bbd50e53d884ba5ad75e4a11d1afd4a"
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
@@ -195,20 +195,6 @@ content_digest = "sha256:7d8aa25cc1766e98b07c6cb95943cb2296414fbe41732e26ff45171
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
-
-[[activity_js]]
-name = "tool_submit"
-ffqn = "obelisk-agent:tools/webapi.submit-json"
-params = [
-  { name = "ffqn", type = "string" },
-  { name = "params-json", type = "string" },
-]
-return_type = "result<string, string>"
-location = "activity/tools/submit.js"
-content_digest = "sha256:89cb590d6a7332041046389501ad910e75703f4226f056ede5b30666834da81a"
-[[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "POST"]
 
 [[activity_js]]
 name = "tool_get_result"
@@ -419,7 +405,7 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "workflow/agent-loop.js"
-content_digest = "sha256:0b47fcb5d09966494d128a702ca9d0947b46732ae464164dbb95bd7c6729d95b"
+content_digest = "sha256:0b01a3ebfdbcb4f5b197e7ec30ad4b2c1916eb5c9e57db6417784312f65641f1"
 
 # Public supervisor workflow. It owns the container lifecycle and races the
 # nested agent-loop workflow against the operator teardown signal.
