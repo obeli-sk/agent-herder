@@ -439,7 +439,7 @@ routes = [
 ]
 env_vars = [
   { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
-  { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://localhost:8080}" },
+  { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
 ]
 content_digest = "sha256:2777ef92ce7d72a26b3717202311a86118ec0383722b613eb0ab7b99f85fad33"
 [[webhook_endpoint_js.allowed_host]]
@@ -538,21 +538,3 @@ params = [
 return_type = "result<string, string>"
 location = "workflow/push-deployment.js"
 content_digest = "sha256:1811dc43ffe08a2f5f473e3c1a16d6c0554bfbc3d3c8d34f83936461037daa91"
-
-
-
-[[activity_js]]
-name = "tool_fetch"
-ffqn = "obelisk-agent:tools/webapi.fetch"
-params = [
-  { name = "method", type = "string" },
-  { name = "path", type = "string" },
-  { name = "body", type = "option<string>" },
-  { name = "headers-json", type = "option<string>" },
-]
-return_type = "result<string, string>"
-location = "activity/tools/fetch.js"
-content_digest = "sha256:a08ec1488bba0c25e2126764e352e4002d89ae947ad78ae6a36be144844e4e50"
-[[activity_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "POST", "PUT", "PATCH", "DELETE"]
