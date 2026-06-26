@@ -12,6 +12,7 @@ content_digest = "sha256:1c3772abfa82a44372a5c4a0896219293bbd50e53d884ba5ad75e4a
 [[activity_js.allowed_host]]
 pattern = "https://obeli.sk"
 methods = ["GET"]
+path_prefixes = ["/docs/latest/llms.txt/"]
 
 [[activity_exec]]
 ffqn = "obelisk-agent:agent/claude.start"
@@ -125,6 +126,7 @@ content_digest = "sha256:ec77bca5b6bc1dd9a3f8c51718855cf86962f027a3ccd1e752735e8
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
+path_prefixes = ["/v1/functions"]
 
 [[activity_js]]
 name = "tool_get_function_wit"
@@ -138,6 +140,7 @@ content_digest = "sha256:2ba62b4293942ce43eb602d1e561e5794caa9364a1fe42ed7d2a965
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
+path_prefixes = ["/v1/functions/wit"]
 
 [[activity_js]]
 name = "tool_list_executions"
@@ -160,6 +163,7 @@ content_digest = "sha256:b2578bda2f4030eb9ed98af6569ffc8f40abc483b824c40bf6e32dd
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
+path_prefixes = ["/v1/executions"]
 
 [[activity_js]]
 name = "tool_get_execution"
@@ -173,6 +177,7 @@ content_digest = "sha256:789db1a9351284af31f96ca1d64a67b314d84c92e7822209eef5da7
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
+path_prefixes = ["/v1/executions/"]
 
 [[activity_js]]
 name = "tool_get_logs"
@@ -195,6 +200,7 @@ content_digest = "sha256:7d8aa25cc1766e98b07c6cb95943cb2296414fbe41732e26ff45171
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
+path_prefixes = ["/v1/executions/"]
 
 [[activity_js]]
 name = "tool_get_result"
@@ -209,6 +215,7 @@ content_digest = "sha256:ff8841a005dcccfe60c72ee4dc031dc224fe486509904e5efe939c4
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
+path_prefixes = ["/v1/executions/"]
 
 [[activity_js]]
 name = "tool_list_deployments"
@@ -224,6 +231,7 @@ content_digest = "sha256:904c1e298892bf46c5e93769867b5be4c7d67bc52292ad918cde573
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
+path_prefixes = ["/v1/deployments"]
 
 [[activity_js]]
 name = "tool_get_deployment"
@@ -241,6 +249,7 @@ content_digest = "sha256:114221dcc1839e544515d604540fb750348407b79acdf5d8f64140b
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
+path_prefixes = ["/v1/deployments/"]
 
 [[activity_js]]
 name = "tool_get_component_source"
@@ -257,6 +266,7 @@ content_digest = "sha256:2fa9a06574929ed371d616f556982784a99b67f44571a329319a7fe
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
+path_prefixes = ["/v1/deployments/", "/v1/files/"]
 
 [[activity_js]]
 name = "tool_current_deployment"
@@ -267,6 +277,7 @@ content_digest = "sha256:1d72a191a660a02247c3f338611793a7f02d4d4dc5cb7547de97727
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
+path_prefixes = ["/v1/deployment-id"]
 
 # --- Deployment editing: checkout -> edit one component -> submit -------------
 # The workflow holds the checked-out deployment.toml in memory, split into
@@ -288,6 +299,7 @@ content_digest = "sha256:553308b4956fc3b4042bcc39bc1ccda0160179437f69073ef56cf68
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
+path_prefixes = ["/v1/deployment-id", "/v1/deployments/"]
 
 [[activity_js]]
 name = "tool_deployment_read_blob"
@@ -301,6 +313,7 @@ content_digest = "sha256:6acfc28f4a031149c6534b41402504e89d6d9a852cb677f6d9cde9c
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
+path_prefixes = ["/v1/files/"]
 
 [[activity_js]]
 name = "tool_deployment_submit"
@@ -322,6 +335,7 @@ content_digest = "sha256:21c6ec22f5e23d5723d67b14f33ba72bcf350d9defc5e17564998b5
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["POST"]
+path_prefixes = ["/v1/deployments"]
 
 [[activity_js]]
 name = "tool_deployment_switch"
@@ -338,6 +352,7 @@ content_digest = "sha256:c99b3e55990fdb02fe596eb109819a2e30aa4fcb620a004e8431c13
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["PUT"]
+path_prefixes = ["/v1/deployments/"]
 
 [[activity_exec]]
 name = "tool_apply_deployment"
@@ -454,6 +469,7 @@ content_digest = "sha256:0f1d3a58f43403ea7be5a1973b6392f71bfe702ca1fe388abaa3020
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET", "POST"]
+path_prefixes = ["/repos/"]
 [activity_js.allowed_host.secrets]
 env_vars = ["AGENT_HERDER_GITHUB_TOKEN"]
 replace_in = ["headers"]
@@ -480,6 +496,7 @@ content_digest = "sha256:95d7ef54ab311a714a90cf25b4c21cdc1c58732ce950e0a3b6a52d8
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["POST"]
+path_prefixes = ["/graphql"]
 [activity_js.allowed_host.secrets]
 env_vars = ["AGENT_HERDER_GITHUB_TOKEN"]
 replace_in = ["headers"]
@@ -503,6 +520,7 @@ content_digest = "sha256:a3bedb61c769df816b3c1188f18321bca6535125b13b8a1f85356b9
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET", "POST"]
+path_prefixes = ["/repos/"]
 [activity_js.allowed_host.secrets]
 env_vars = ["AGENT_HERDER_GITHUB_TOKEN"]
 replace_in = ["headers"]
@@ -548,3 +566,4 @@ content_digest = "sha256:2777ef92ce7d72a26b3717202311a86118ec0383722b613eb0ab7b9
 [[webhook_endpoint_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
+path_prefixes = ["/v1/deployment-id", "/v1/deployments/", "/v1/executions", "/v1/files/"]
