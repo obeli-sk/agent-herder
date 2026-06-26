@@ -423,28 +423,13 @@ content_digest = "sha256:d08dbd23903cfab5f3b4da768da819519baf1397106c3dc6cd8ef54
 [[webhook_endpoint_js]]
 name = "ui"
 location = "webhook/ui.js"
+content_digest = "sha256:a9bbb468d2c65260797d9c50ac8abd1b54260173cbb472ba6fafa9bf98c74722"
 routes = [
   { methods = ["GET"], route = "/" },
-  { methods = ["GET"], route = "/api/runs" },
-  { methods = ["GET"], route = "/api/runs/:execution-id" },
-  { methods = ["GET"], route = "/api/logs/:execution-id" },
-  { methods = ["POST"], route = "/api/submit" },
-  { methods = ["POST"], route = "/api/answer/:child-id" },
-  { methods = ["POST"], route = "/api/confirm/:child-id" },
-  { methods = ["POST"], route = "/api/pause/:execution-id" },
-  { methods = ["POST"], route = "/api/unpause/:execution-id" },
-  { methods = ["POST"], route = "/api/say/:execution-id" },
-  { methods = ["POST"], route = "/api/cleanup/:execution-id" },
-  { methods = ["POST"], route = "/api/fork/:execution-id" },
 ]
 env_vars = [
-  { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
 ]
-content_digest = "sha256:2777ef92ce7d72a26b3717202311a86118ec0383722b613eb0ab7b99f85fad33"
-[[webhook_endpoint_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "PUT"]
 
 # --- agent-herder GitHub export ----------------------------------------------
 # Activities for pushing the live deployment manifest + owned sources into a
@@ -538,3 +523,28 @@ params = [
 return_type = "result<string, string>"
 location = "workflow/push-deployment.js"
 content_digest = "sha256:1811dc43ffe08a2f5f473e3c1a16d6c0554bfbc3d3c8d34f83936461037daa91"
+
+[[webhook_endpoint_js]]
+name = "ui-api"
+location = "webhook/ui-api.js"
+routes = [
+  { methods = ["GET"], route = "/api/runs" },
+  { methods = ["GET"], route = "/api/runs/:execution-id" },
+  { methods = ["GET"], route = "/api/logs/:execution-id" },
+  { methods = ["POST"], route = "/api/submit" },
+  { methods = ["POST"], route = "/api/answer/:child-id" },
+  { methods = ["POST"], route = "/api/confirm/:child-id" },
+  { methods = ["POST"], route = "/api/pause/:execution-id" },
+  { methods = ["POST"], route = "/api/unpause/:execution-id" },
+  { methods = ["POST"], route = "/api/say/:execution-id" },
+  { methods = ["POST"], route = "/api/cleanup/:execution-id" },
+  { methods = ["POST"], route = "/api/fork/:execution-id" },
+]
+env_vars = [
+  { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
+  { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
+]
+content_digest = "sha256:2777ef92ce7d72a26b3717202311a86118ec0383722b613eb0ab7b99f85fad33"
+[[webhook_endpoint_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
