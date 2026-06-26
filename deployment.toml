@@ -180,6 +180,55 @@ methods = ["GET"]
 path_prefixes = ["/v1/executions/"]
 
 [[activity_js]]
+name = "tool_get_execution_record"
+ffqn = "obelisk-agent:tools/webapi.get-execution-record"
+params = [
+  { name = "execution-id", type = "string" },
+]
+return_type = "result<string, string>"
+location = "activity/tools/get-execution-record.js"
+content_digest = "sha256:89e0c5f06524f017d9341838f99415969a48fa815544e48a8b617d7cb3d1b38d"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+path_prefixes = ["/v1/executions/"]
+
+[[activity_js]]
+name = "tool_get_events"
+ffqn = "obelisk-agent:tools/webapi.get-events"
+params = [
+  { name = "execution-id", type = "string" },
+  { name = "cursor-kind", type = "string" },
+  { name = "cursor", type = "u32" },
+  { name = "including-cursor", type = "bool" },
+  { name = "length", type = "u32" },
+]
+return_type = "result<string, string>"
+location = "activity/tools/get-events.js"
+content_digest = "sha256:f7c584f72481219f57ecd02fef1af3fcfb5a34ad08a4f5bb3b0892d0295d2de0"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+path_prefixes = ["/v1/executions/"]
+
+[[activity_js]]
+name = "tool_get_responses"
+ffqn = "obelisk-agent:tools/webapi.get-responses"
+params = [
+  { name = "execution-id", type = "string" },
+  { name = "cursor", type = "u32" },
+  { name = "including-cursor", type = "bool" },
+  { name = "length", type = "u32" },
+]
+return_type = "result<string, string>"
+location = "activity/tools/get-responses.js"
+content_digest = "sha256:887e5cf46b82688db0413a98898e1ca1c01c7aa0bd38ab80322ef6b56b8c3986"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET"]
+path_prefixes = ["/v1/executions/"]
+
+[[activity_js]]
 name = "tool_get_logs"
 ffqn = "obelisk-agent:tools/webapi.get-logs"
 params = [
@@ -353,6 +402,79 @@ content_digest = "sha256:c99b3e55990fdb02fe596eb109819a2e30aa4fcb620a004e8431c13
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["PUT"]
 path_prefixes = ["/v1/deployments/"]
+
+[[activity_js]]
+name = "tool_submit_workflow_execution"
+ffqn = "obelisk-agent:tools/webapi.submit-workflow-execution"
+params = [
+  { name = "execution-id", type = "string" },
+  { name = "prompt", type = "string" },
+  { name = "backend", type = "option<string>" },
+]
+return_type = "result<string, string>"
+location = "activity/tools/submit-workflow-execution.js"
+content_digest = "sha256:00b633f87677c648f633f18659f7891fb7bd2429c29cb86e3ee2e26c1bde8444"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+path_prefixes = ["/v1/executions/"]
+
+[[activity_js]]
+name = "tool_pause_execution"
+ffqn = "obelisk-agent:tools/webapi.pause-execution"
+params = [
+  { name = "execution-id", type = "string" },
+]
+return_type = "result<string, string>"
+location = "activity/tools/pause-execution.js"
+content_digest = "sha256:bad2ec74517aac4e8b1f45ed998069c49aeb7f926ce6137ffd42f5dc70b6b609"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+path_prefixes = ["/v1/executions/"]
+
+[[activity_js]]
+name = "tool_unpause_execution"
+ffqn = "obelisk-agent:tools/webapi.unpause-execution"
+params = [
+  { name = "execution-id", type = "string" },
+]
+return_type = "result<string, string>"
+location = "activity/tools/unpause-execution.js"
+content_digest = "sha256:e0d98a0d3734f2f1554d32a0ec56cafe4309114ae7b85b8a37e4c09365aa4e03"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+path_prefixes = ["/v1/executions/"]
+
+[[activity_js]]
+name = "tool_cancel_execution"
+ffqn = "obelisk-agent:tools/webapi.cancel-execution"
+params = [
+  { name = "execution-id", type = "string" },
+]
+return_type = "result<string, string>"
+location = "activity/tools/cancel-execution.js"
+content_digest = "sha256:8ebba015d4b0ad6e06976c2336f605338c1a9585cead3d1f892805e1a6ed9178"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+path_prefixes = ["/v1/executions/"]
+
+[[activity_js]]
+name = "tool_stub_execution"
+ffqn = "obelisk-agent:tools/webapi.stub-execution"
+params = [
+  { name = "execution-id", type = "string" },
+  { name = "result-json", type = "string" },
+]
+return_type = "result<string, string>"
+location = "activity/tools/stub-execution.js"
+content_digest = "sha256:5b43919f834f5ed1b0043893a7e3c2853dee36272d99c46c0711f18dba904d91"
+[[activity_js.allowed_host]]
+pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
+methods = ["GET", "PUT"]
+path_prefixes = ["/v1/executions/"]
 
 [[activity_exec]]
 name = "tool_apply_deployment"
@@ -559,11 +681,6 @@ routes = [
   { methods = ["POST"], route = "/api/fork/:execution-id" },
 ]
 env_vars = [
-  { key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" },
   { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
 ]
-content_digest = "sha256:2777ef92ce7d72a26b3717202311a86118ec0383722b613eb0ab7b99f85fad33"
-[[webhook_endpoint_js.allowed_host]]
-pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
-methods = ["GET", "PUT"]
-path_prefixes = ["/v1/deployment-id", "/v1/deployments/", "/v1/executions", "/v1/files/"]
+content_digest = "sha256:505dcea166e2718296a25509d6451f39f9b66cf37d96789e7c0d030a781af3ec"

@@ -15,6 +15,8 @@
 // two-pane: sidebar = prompt list + new-prompt form, right pane = chat-style
 // transcript.
 
+import * as webapi from "obelisk-agent:tools/webapi";
+
 const WORKFLOW_FFQN = "obelisk-agent:workflow/workflow.run";
 const AGENT_LOOP_FFQN = "obelisk-agent:workflow/workflow.agent-loop";
 const ASK_USER_FFQN = "obelisk-agent:tools/input.ask-user";
@@ -77,19 +79,104 @@ export default async function handle(request) {
 
 // ----- helpers ----------------------------------------------------------
 
-function apiBase() {
-    return process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005";
+function activityJson(label, text) {
+    try { return JSON.parse(text); }
+    catch (e) { throw new Error(`${label}: non-JSON activity result: ${e.message}`); }
 }
 
-async function obeliskJson(path, init) {
-    const resp = await fetch(`${apiBase()}${path}`, {
-        ...init,
-        headers: { accept: "application/json", ...(init?.headers ?? {}) },
-    });
-    if (!resp.ok) {
-        throw new Error(`${path}: HTTP ${resp.status} ${await resp.text()}`);
-    }
-    return await resp.json();
+function listExecutions(
+    ffqnPrefix,
+    executionIdPrefix,
+    showDerived,
+    hideFinished,
+    length,
+) {
+    return activityJson("list-executions", webapi.listExecutions(
+        ffqnPrefix || "",
+        executionIdPrefix || "",
+        Boolean(showDerived),
+        Boolean(hideFinished),
+        "",
+        "",
+        "",
+        "",
+        false,
+        length || 20,
+    ));
+}
+
+function getExecutionStatus(id) {
+    return activityJson(`get-execution ${id}`, webapi.getExecution(id));
+}
+
+function getExecutionRecord(id) {
+    return activityJson(`get-execution-record ${id}`, webapi.getExecutionRecord(id));
+}
+
+function getExecutionEvents(id, cursorKind, cursor, includingCursor, length) {
+    return activityJson(`get-events ${id}`, webapi.getEvents(
+        id,
+        cursorKind,
+        cursor,
+        Boolean(includingCursor),
+        length || 200,
+    ));
+}
+
+function getExecutionResponses(id, cursor, includingCursor, length) {
+    return activityJson(`get-responses ${id}`, webapi.getResponses(
+        id,
+        cursor,
+        Boolean(includingCursor),
+        length || 200,
+    ));
+}
+
+function getExecutionLogs(id, showDerived, cursor, includingCursor, length) {
+    return activityJson(`get-logs ${id}`, webapi.getLogs(
+        id,
+        Boolean(showDerived),
+        true,
+        true,
+        [],
+        [],
+        cursor || "",
+        "newer",
+        Boolean(includingCursor),
+        length || 200,
+    ));
+}
+
+function getDeployment(id) {
+    return activityJson(`get-deployment ${id}`, webapi.getDeployment(id, null, null, null, null));
+}
+
+function currentDeploymentId() {
+    return activityJson("current-deployment-id", webapi.currentDeploymentId());
+}
+
+function readBlob(digest) {
+    return webapi.deploymentReadBlob(digest);
+}
+
+function pauseObeliskExecution(id) {
+    return activityJson(`pause-execution ${id}`, webapi.pauseExecution(id));
+}
+
+function unpauseObeliskExecution(id) {
+    return activityJson(`unpause-execution ${id}`, webapi.unpauseExecution(id));
+}
+
+function cancelObeliskExecution(id) {
+    return activityJson(`cancel-execution ${id}`, webapi.cancelExecution(id));
+}
+
+function stubObeliskExecution(id, result) {
+    return activityJson(`stub-execution ${id}`, webapi.stubExecution(id, JSON.stringify(result)));
+}
+
+function submitWorkflowExecution(id, prompt, backend) {
+    return activitsubmit - workflow - executionyJson(`submit-workflow-execution ${id}`, webapi.submitWorkflowExecution(id, prompt, backend));
 }
 
 function jsonResponse(value, status = 200) {
@@ -136,9 +223,7 @@ function nonNegativeInteger(value) {
 // ----- list -------------------------------------------------------------
 
 async function listRuns() {
-    const executions = await obeliskJson(
-        `/v1/executions?ffqn_prefix=${encodeURIComponent(WORKFLOW_FFQN)}&length=50`,
-    );
+    const executions = listExecutions(WORKFLOW_FFQN, "", false, false, 50);
     const runs = await Promise.all(executions.map(async (e) => ({
         id: e.execution_id,
         created_at: e.created_at || "",
@@ -202,10 +287,7 @@ async function detailRun(id, cursorState) {
 async function loadAgentLoopExecution(workflowId) {
     let candidates;
     try {
-        candidates = await obeliskJson(
-            `/v1/executions?ffqn_prefix=${encodeURIComponent(AGENT_LOOP_FFQN)}`
-            + `&execution_id_prefix=${encodeURIComponent(workflowId)}&show_derived=true&length=10`,
-        );
+        candidates = listExecutions(AGENT_LOOP_FFQN, workflowId, true, false, 10);
     } catch (_) { return null; }
     const mine = candidates.filter((e) => typeof e.execution_id === "string"
         && e.execution_id.startsWith(workflowId + "."));
@@ -213,7 +295,7 @@ async function loadAgentLoopExecution(workflowId) {
 }
 
 async function loadStatus(id) {
-    try { return await obeliskJson(`/v1/executions/${encodeURIComponent(id)}/status`); }
+    try { return getExecutionStatus(id); }
     catch (_) { return null; }
 }
 
@@ -222,9 +304,7 @@ async function loadStatus(id) {
 // the `locked` event at version 1, which has no params.
 async function loadCreated(id) {
     try {
-        const payload = await obeliskJson(
-            `/v1/executions/${encodeURIComponent(id)}/events?version_from=0&including_cursor=true&length=1`,
-        );
+        const payload = getExecutionEvents(id, "version_from", 0, true, 1);
         const params = payload.events?.[0]?.event?.created?.params;
         if (!Array.isArray(params)) return null;
         return {
@@ -240,9 +320,9 @@ async function loadPrompt(id) {
 
 async function loadFinalResult(id) {
     try {
-        const status = await obeliskJson(`/v1/executions/${encodeURIComponent(id)}/status`);
+        const status = getExecutionStatus(id);
         if (status?.pending_state?.status !== "finished") return null;
-        return await obeliskJson(`/v1/executions/${encodeURIComponent(id)}`);
+        return getExecutionRecord(id);
     } catch (e) { return { error: String(e) }; }
 }
 
@@ -256,11 +336,7 @@ async function loadExecutionTreeLogs(workflowId, startCursor) {
     while (true) {
         let page;
         try {
-            page = await obeliskJson(
-                `/v1/executions/${encodeURIComponent(workflowId)}/logs`
-                + `?show_derived=true&cursor=${encodeURIComponent(cursor)}`
-                + `&direction=newer&including_cursor=${including}&length=200`,
-            );
+            page = getExecutionLogs(workflowId, true, cursor, including, 200);
         } catch (_) { break; }
         if (!Array.isArray(page) || page.length === 0) break;
         logs.push(...page);
@@ -276,21 +352,17 @@ async function loadExecutionTreeLogs(workflowId, startCursor) {
 async function loadPendingAsks(workflowId) {
     let candidates;
     try {
-        candidates = await obeliskJson(
-            `/v1/executions?ffqn_prefix=${encodeURIComponent(ASK_USER_FFQN)}&show_derived=true&hide_finished=true&length=50`,
-        );
+        candidates = listExecutions(ASK_USER_FFQN, "", true, true, 50);
     } catch (_) { return []; }
     const mine = candidates.filter((e) => typeof e.execution_id === "string"
         && e.execution_id.startsWith(workflowId + "."));
     return await Promise.all(mine.map(async (e) => {
         let question = null;
         try {
-            const evs = await obeliskJson(
-                `/v1/executions/${encodeURIComponent(e.execution_id)}/events?version_from=0&including_cursor=true&length=1`,
-            );
+            const evs = getExecutionEvents(e.execution_id, "version_from", 0, true, 1);
             const p = evs.events?.[0]?.event?.created?.params;
             if (Array.isArray(p) && typeof p[0] === "string") question = p[0];
-        } catch (_) {}
+        } catch (_) { }
         return { id: e.execution_id, question };
     }));
 }
@@ -298,11 +370,7 @@ async function loadPendingAsks(workflowId) {
 async function loadTeardownSignal(workflowId) {
     let candidates;
     try {
-        candidates = await obeliskJson(
-            `/v1/executions?ffqn_prefix=${encodeURIComponent(TEARDOWN_SIGNAL_FFQN)}`
-            + `&execution_id_prefix=${encodeURIComponent(workflowId)}`
-            + "&show_derived=true&hide_finished=true&length=10",
-        );
+        candidates = listExecutions(TEARDOWN_SIGNAL_FFQN, workflowId, true, true, 10);
     } catch (_) { return null; }
     const mine = candidates.filter((e) => typeof e.execution_id === "string"
         && e.execution_id.startsWith(workflowId + "."));
@@ -312,11 +380,7 @@ async function loadTeardownSignal(workflowId) {
 async function loadPendingInjection(workflowId) {
     let candidates;
     try {
-        candidates = await obeliskJson(
-            `/v1/executions?ffqn_prefix=${encodeURIComponent(INJECTION_FFQN)}`
-            + `&execution_id_prefix=${encodeURIComponent(workflowId)}`
-            + "&show_derived=true&hide_finished=true&length=10",
-        );
+        candidates = listExecutions(INJECTION_FFQN, workflowId, true, true, 10);
     } catch (_) { return null; }
     const mine = candidates.filter((e) => e?.ffqn === INJECTION_FFQN
         && typeof e.execution_id === "string"
@@ -333,9 +397,7 @@ async function loadPendingInjection(workflowId) {
 async function loadPendingConfirms(workflowId) {
     let candidates;
     try {
-        candidates = await obeliskJson(
-            `/v1/executions?ffqn_prefix=${encodeURIComponent(CONFIRM_FFQN)}&show_derived=true&hide_finished=true&length=50`,
-        );
+        candidates = listExecutions(CONFIRM_FFQN, "", true, true, 50);
     } catch (_) { return []; }
     const mine = candidates.filter((e) => typeof e.execution_id === "string"
         && e.execution_id.startsWith(workflowId + "."));
@@ -348,20 +410,18 @@ async function loadPendingConfirms(workflowId) {
         let deploymentId = null;
         let summary = "";
         try {
-            const evs = await obeliskJson(
-                `/v1/executions/${encodeURIComponent(e.execution_id)}/events?version_from=0&including_cursor=true&length=1`,
-            );
+            const evs = getExecutionEvents(e.execution_id, "version_from", 0, true, 1);
             const p = evs.events?.[0]?.event?.created?.params;
             if (Array.isArray(p)) {
                 if (typeof p[0] === "string") deploymentId = p[0];
                 if (typeof p[1] === "string") summary = p[1];
             }
-        } catch (_) {}
+        } catch (_) { }
 
         let diff = null;
         if (deploymentId) {
             try {
-                const dep = await obeliskJson(`/v1/deployments/${encodeURIComponent(deploymentId)}`);
+                const dep = getDeployment(deploymentId);
                 diff = diffSources(currentSources, await collectSources(dep.deployment_toml));
             } catch (err) { diff = { error: String(err) }; }
         }
@@ -374,9 +434,9 @@ async function loadPendingConfirms(workflowId) {
 // the active id as a JSON string; its manifest lives in the per-id GET.
 async function loadCurrentSources() {
     try {
-        const id = await obeliskJson(`/v1/deployment-id`);
+        const id = currentDeploymentId();
         if (!id || typeof id !== "string") return {};
-        const dep = await obeliskJson(`/v1/deployments/${encodeURIComponent(id)}`);
+        const dep = getDeployment(id);
         return await collectSources(dep.deployment_toml);
     } catch (_) { return {}; }
 }
@@ -389,8 +449,7 @@ async function collectSources(deploymentToml) {
     if (typeof deploymentToml !== "string") return out;
     for (const ref of ownedScriptRefs(deploymentToml)) {
         try {
-            const resp = await fetch(`${apiBase()}/v1/files/${encodeURIComponent(ref.digest)}`);
-            if (resp.ok) out[ref.location] = await resp.text();
+            out[ref.location] = readBlob(ref.digest);
         } catch (_) { /* skip an unreadable blob */ }
     }
     return out;
@@ -494,9 +553,7 @@ async function loadResponses(execId, startCursor = 0) {
     while (true) {
         let payload;
         try {
-            payload = await obeliskJson(
-                `/v1/executions/${encodeURIComponent(execId)}/responses?cursor=${cursor}&including_cursor=${including}&length=200`,
-            );
+            payload = getExecutionResponses(execId, cursor, including, 200);
         } catch (_) { break; }
         const responses = payload.responses || [];
         for (const r of responses) {
@@ -553,7 +610,7 @@ async function loadResponses(execId, startCursor = 0) {
 
 async function loadRecvPresentation(executionId) {
     try {
-        const logs = await obeliskJson(`/v1/executions/${encodeURIComponent(executionId)}/logs`);
+        const logs = getExecutionLogs(executionId, false, "", false, 200);
         let finalMessage = "";
         for (const entry of logs) {
             if (entry?.type !== "stream" || entry.stream_type !== "stderr") continue;
@@ -570,7 +627,7 @@ async function loadRecvPresentation(executionId) {
                         && typeof event.item.text === "string") {
                         finalMessage = event.item.text;
                     }
-                } catch (_) {}
+                } catch (_) { }
             }
         }
         return stripActionEnvelopes(finalMessage);
@@ -600,7 +657,7 @@ function stripActionEnvelopes(text) {
             isEnvelope = value && typeof value === "object"
                 && (Array.isArray(value.tool_calls) || typeof value.final === "string"
                     || typeof value.error === "string");
-        } catch (_) {}
+        } catch (_) { }
         if (!isEnvelope) output += slice;
         cursor = end + 1;
     }
@@ -640,9 +697,7 @@ async function loadSentResults(execId, startVersion = 0) {
     while (true) {
         let payload;
         try {
-            payload = await obeliskJson(
-                `/v1/executions/${encodeURIComponent(execId)}/events?version=${version}&including_cursor=${including}&length=200`,
-            );
+            payload = getExecutionEvents(execId, "version", version, including, 200);
         } catch (_) { break; }
         const events = payload.events || [];
         for (const e of events) {
@@ -735,7 +790,7 @@ async function submit(request) {
     // backend is the workflow's option<string>: null => claude.
     const backend = (typeof payload?.backend === "string" && payload.backend) ? payload.backend : null;
     const execId = obelisk.executionIdGenerate();
-    try { obelisk.schedule(execId, WORKFLOW_FFQN, [prompt, backend]); }
+    try { submitWorkflowExecution(execId, prompt, backend); }
     catch (e) { return jsonError(502, `schedule failed: ${String(e)}`); }
     return jsonResponse({ execution_id: execId });
 }
@@ -751,11 +806,12 @@ async function pauseExecution(id, unpause) {
     const targets = [id, ...await childWorkflowIds(id)];
     const failures = [];
     for (const target of targets) {
-        const resp = await fetch(
-            `${apiBase()}/v1/executions/${encodeURIComponent(target)}/${verb}`,
-            { method: "PUT" },
-        );
-        if (!resp.ok) failures.push(`${target}: HTTP ${resp.status} ${await resp.text()}`);
+        try {
+            if (unpause) unpauseObeliskExecution(target);
+            else pauseObeliskExecution(target);
+        } catch (e) {
+            failures.push(`${target}: ${String(e)}`);
+        }
     }
     if (failures.length) {
         return jsonError(502, `${verb} failed: ${failures.join("; ")}`);
@@ -768,10 +824,7 @@ async function pauseExecution(id, unpause) {
 async function childWorkflowIds(runId) {
     let executions;
     try {
-        executions = await obeliskJson(
-            `/v1/executions?execution_id_prefix=${encodeURIComponent(runId)}`
-            + "&show_derived=true&hide_finished=true&length=200",
-        );
+        executions = listExecutions("", runId, true, true, 200);
     } catch (_) { return []; }
     return executions
         .filter((e) => e?.execution_id !== runId && e?.component_type === "workflow")
@@ -796,21 +849,11 @@ async function cleanupSession(runId) {
 
     const signalId = await loadTeardownSignal(runId);
     if (!signalId) return jsonError(409, "teardown signal is not ready");
-    const resp = await fetch(
-        `${apiBase()}/v1/executions/${encodeURIComponent(signalId)}/cancel`,
-        { method: "PUT" },
-    );
-    if (!resp.ok) {
-        return jsonError(502, `teardown signal failed: HTTP ${resp.status} ${await resp.text()}`);
-    }
+    try { cancelObeliskExecution(signalId); }
+    catch (e) { return jsonError(502, `teardown signal failed: ${String(e)}`); }
     if (executionStatus === "paused") {
-        const unpause = await fetch(
-            `${apiBase()}/v1/executions/${encodeURIComponent(runId)}/unpause`,
-            { method: "PUT" },
-        );
-        if (!unpause.ok) {
-            return jsonError(502, `teardown signalled but unpause failed: HTTP ${unpause.status} ${await unpause.text()}`);
-        }
+        try { unpauseObeliskExecution(runId); }
+        catch (e) { return jsonError(502, `teardown signalled but unpause failed: ${String(e)}`); }
     }
 
     // Obelisk closes a join set by cancelling activities and delays, but it
@@ -833,10 +876,7 @@ async function waitForSupervisorClosing(runId) {
 async function cancelPendingDescendants(runId, signalId) {
     let executions;
     try {
-        executions = await obeliskJson(
-            `/v1/executions?execution_id_prefix=${encodeURIComponent(runId)}`
-            + "&show_derived=true&hide_finished=true&length=200",
-        );
+        executions = listExecutions("", runId, true, true, 200);
     } catch (_) { return []; }
 
     const cancellable = executions.filter((execution) => {
@@ -848,11 +888,10 @@ async function cancelPendingDescendants(runId, signalId) {
     const cancelled = [];
     for (const execution of cancellable) {
         const id = execution.execution_id;
-        const response = await fetch(
-            `${apiBase()}/v1/executions/${encodeURIComponent(id)}/cancel`,
-            { method: "PUT" },
-        );
-        if (response.ok) cancelled.push(id);
+        try {
+            cancelObeliskExecution(id);
+            cancelled.push(id);
+        } catch (_) { }
     }
     return cancelled;
 }
@@ -868,17 +907,8 @@ async function sayToAgent(request, runId) {
     if (typeof text !== "string" || !text.trim()) return jsonError(400, "text is required");
     const injection = await loadPendingInjection(runId);
     if (!injection) return jsonError(409, "agent is not currently accepting an injected message");
-    const resp = await fetch(
-        `${apiBase()}/v1/executions/${encodeURIComponent(injection.id)}/stub`,
-        {
-            method: "PUT",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ ok: text.trim() }),
-        },
-    );
-    if (!resp.ok) {
-        return jsonError(502, `injection fulfil failed: HTTP ${resp.status} ${await resp.text()}`);
-    }
+    try { stubObeliskExecution(injection.id, { ok: text.trim() }); }
+    catch (e) { return jsonError(502, `injection fulfil failed: ${String(e)}`); }
     return jsonResponse({ child_execution_id: injection.id });
 }
 
@@ -902,7 +932,7 @@ async function forkRun(request, runId) {
         text ? `Then: ${text}` : `Then continue that work.`,
     ].join(" ");
     const execId = obelisk.executionIdGenerate();
-    try { obelisk.schedule(execId, WORKFLOW_FFQN, [prompt, backend]); }
+    try { submitWorkflowExecution(execId, prompt, backend); }
     catch (e) { return jsonError(502, `fork schedule failed: ${String(e)}`); }
     return jsonResponse({ execution_id: execId });
 }
@@ -919,17 +949,8 @@ async function answerStub(request, childId) {
     if (typeof answer !== "string" || !answer) {
         return jsonError(400, "answer is required");
     }
-    const resp = await fetch(
-        `${apiBase()}/v1/executions/${encodeURIComponent(childId)}/stub`,
-        {
-            method: "PUT",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ ok: answer }),
-        },
-    );
-    if (!resp.ok) {
-        return jsonError(502, `stub fulfil failed: HTTP ${resp.status} ${await resp.text()}`);
-    }
+    try { stubObeliskExecution(childId, { ok: answer }); }
+    catch (e) { return jsonError(502, `stub fulfil failed: ${String(e)}`); }
     return jsonResponse({ ok: true });
 }
 
@@ -948,17 +969,8 @@ async function confirmDeploy(request, childId) {
     const stubResult = approve
         ? { ok: null }
         : { err: "operator cancelled" };
-    const resp = await fetch(
-        `${apiBase()}/v1/executions/${encodeURIComponent(childId)}/stub`,
-        {
-            method: "PUT",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(stubResult),
-        },
-    );
-    if (!resp.ok) {
-        return jsonError(502, `stub fulfil failed: HTTP ${resp.status} ${await resp.text()}`);
-    }
+    try { stubObeliskExecution(childId, stubResult); }
+    catch (e) { return jsonError(502, `stub fulfil failed: ${String(e)}`); }
     return jsonResponse({ ok: true });
 }
 
