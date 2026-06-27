@@ -439,7 +439,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
-request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+$|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status$)"
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
 
 [[activity_js]]
 name = "tool_pause_execution"
@@ -454,7 +454,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
-request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/pause$|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status$)"
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/pause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
 
 [[activity_js]]
 name = "tool_unpause_execution"
@@ -469,7 +469,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
-request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/unpause$|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status$)"
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/unpause|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
 
 [[activity_js]]
 name = "tool_cancel_execution"
@@ -484,7 +484,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
-request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/cancel$|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status$)"
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/cancel|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
 
 [[activity_js]]
 name = "tool_stub_execution"
@@ -500,7 +500,7 @@ env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
-request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub$|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status$)"
+request_url_regex = "^(PUT ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/stub|GET ${OBELISK_API_URL_REGEX:-http://127\\.0\\.0\\.1:5005}/v1/executions/E_[^/]+/status)$"
 
 [[activity_exec]]
 name = "tool_apply_deployment"
@@ -617,7 +617,7 @@ content_digest = "sha256:0f1d3a58f43403ea7be5a1973b6392f71bfe702ca1fe388abaa3020
 [[activity_js.allowed_host]]
 pattern = "https://api.github.com"
 methods = ["GET", "POST"]
-request_url_regex = "^(POST https://api\\.github\\.com/repos/[^/]+/[^/]+/git/refs$|GET https://api\\.github\\.com/repos/[^/]+/[^/]+/git/ref/heads/[^/]+$)"
+request_url_regex = "^(POST https://api\\.github\\.com/repos/[^/]+/[^/]+/git/refs|GET https://api\\.github\\.com/repos/[^/]+/[^/]+/git/ref/heads/[^/]+)$"
 [activity_js.allowed_host.secrets]
 env_vars = ["AGENT_HERDER_GITHUB_TOKEN"]
 replace_in = ["headers"]
