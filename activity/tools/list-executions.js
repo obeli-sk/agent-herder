@@ -15,7 +15,8 @@ export default async function list_executions(
     includingCursor,
     length,
 ) {
-    const base = process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005";
+    const base = process.env["OBELISK_API_URL"];
+    if (!base) throw "OBELISK_API_URL is not configured";
     // The activity JS runtime has no URLSearchParams; build the query manually.
     const params = [];
     if (ffqnPrefix) params.push(`ffqn_prefix=${encodeURIComponent(ffqnPrefix)}`);

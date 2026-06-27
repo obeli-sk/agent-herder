@@ -11,7 +11,8 @@
 //
 // When deployment-id is omitted the currently active deployment is checked out.
 export default async function deployment_checkout(deploymentId) {
-    const base = process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005";
+    const base = process.env["OBELISK_API_URL"];
+    if (!base) throw "OBELISK_API_URL is not configured";
     // /v1/deployment-id returns the active ID as a JSON string under Accept:
     // application/json, so parse it rather than reading the quoted text.
     const active = String(await getJson(`${base}/v1/deployment-id`)).trim();

@@ -126,7 +126,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/list-functions.js"
-content_digest = "sha256:ec77bca5b6bc1dd9a3f8c51718855cf86962f027a3ccd1e752735e82c3ca75e9"
+content_digest = "sha256:c417661a167e95b2924738aa9ad64b29b94131b007fcb15a26a6e5270c0d7484"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -140,7 +141,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/get-function-wit.js"
-content_digest = "sha256:2ba62b4293942ce43eb602d1e561e5794caa9364a1fe42ed7d2a965dd83bee19"
+content_digest = "sha256:f21c7f6a65fb3849bbc67cb1bb2f2d9fcc815819006c97e45ec5362f49e72f68"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -163,7 +165,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/list-executions.js"
-content_digest = "sha256:b2578bda2f4030eb9ed98af6569ffc8f40abc483b824c40bf6e32ddd0dd99d19"
+content_digest = "sha256:dcb9ec7d4a0174bcf2acca13e8d19e2fb0532b4e1ed5d0a748a5515b9b3d2894"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -177,7 +180,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/get-execution.js"
-content_digest = "sha256:789db1a9351284af31f96ca1d64a67b314d84c92e7822209eef5da77cdcd9fbb"
+content_digest = "sha256:e63d665d66288cb7f3a76f51e48ddc476e268e7b4d09bf8063026c19ea0845cb"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -191,7 +195,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/get-execution-record.js"
-content_digest = "sha256:89e0c5f06524f017d9341838f99415969a48fa815544e48a8b617d7cb3d1b38d"
+content_digest = "sha256:e30be137f1d7e0989a80eaea1e2412342fd543eb96e70361abe353c3584e7377"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -209,7 +214,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/get-events.js"
-content_digest = "sha256:f7c584f72481219f57ecd02fef1af3fcfb5a34ad08a4f5bb3b0892d0295d2de0"
+content_digest = "sha256:6ebaf768ff4f0b918ee0c20667ca9ed32b9ec12c117a0aadae43a5bd3209fa05"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -226,7 +232,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/get-responses.js"
-content_digest = "sha256:887e5cf46b82688db0413a98898e1ca1c01c7aa0bd38ab80322ef6b56b8c3986"
+content_digest = "sha256:92bb82a41fdcbedbc5466bb9add51a321f3d4da473970d1469e4fab207f6bd2a"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -249,7 +256,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/get-logs.js"
-content_digest = "sha256:7d8aa25cc1766e98b07c6cb95943cb2296414fbe41732e26ff45171e646568f8"
+content_digest = "sha256:052011dcac24538ce3a876b8b7e82cf17fcfa5c08b6810ab316ef14d5c7f92a5"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -264,7 +272,8 @@ params = [
 return_type = "result<string, string>"
 location = "activity/tools/get-result.js"
 exec.lock_expiry.minutes = 10
-content_digest = "sha256:ff8841a005dcccfe60c72ee4dc031dc224fe486509904e5efe939c449822f284"
+content_digest = "sha256:83b1ea3b3037b893b16f089110dc8a6aa7f8d6381dccb73fb9405a0adca22e4c"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -280,7 +289,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/list-deployments.js"
-content_digest = "sha256:904c1e298892bf46c5e93769867b5be4c7d67bc52292ad918cde5733f6e4ae2a"
+content_digest = "sha256:7048f1bbc667938915a10e19ff6c06fede28a57e9d32f4aa50feb3f56053629d"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -298,7 +308,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/get-deployment.js"
-content_digest = "sha256:114221dcc1839e544515d604540fb750348407b79acdf5d8f64140b473cc4cec"
+content_digest = "sha256:778f703a507b93f98145348d3417f9acdedeaecb6e56fabba3fc76cc23e48dd4"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -315,7 +326,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/get-component-source.js"
-content_digest = "sha256:2fa9a06574929ed371d616f556982784a99b67f44571a329319a7fe9741ae716"
+content_digest = "sha256:fb00915c3109f2ce036dcd24b5c077a43b15729ad5a2ba84b92ece5faa715e3e"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -326,7 +338,8 @@ name = "tool_current_deployment"
 ffqn = "obelisk-agent:tools/webapi.current-deployment-id"
 return_type = "result<string, string>"
 location = "activity/tools/current-deployment.js"
-content_digest = "sha256:1d72a191a660a02247c3f338611793a7f02d4d4dc5cb7547de97727b5f96fc81"
+content_digest = "sha256:8dcedff82784d2fd40173a82477b16a35310434bf0cf15bb3e5be16282e6a827"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -348,7 +361,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/deployment-checkout.js"
-content_digest = "sha256:553308b4956fc3b4042bcc39bc1ccda0160179437f69073ef56cf6889f9203ca"
+content_digest = "sha256:837c313adfff00d999f3af5cbd464529083d3b6b94d68653139d48900b410671"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -362,7 +376,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/deployment-read-blob.js"
-content_digest = "sha256:6acfc28f4a031149c6534b41402504e89d6d9a852cb677f6d9cde9c9fddddaf3"
+content_digest = "sha256:6eb37181729368f5331f6c8ad0a3ebdd85067d461b0906b882507490a1221c23"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET"]
@@ -384,7 +399,8 @@ return_type = "result<string, string>"
 exec.lock_expiry.minutes = 5
 max_retries = 0
 location = "activity/tools/deployment-submit.js"
-content_digest = "sha256:21c6ec22f5e23d5723d67b14f33ba72bcf350d9defc5e17564998b509ec7fd8f"
+content_digest = "sha256:b6b89d51b3847e254c69acce8c5093ec9d5617304336f07a1a0f74afbdfeaa93"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["POST"]
@@ -401,7 +417,8 @@ return_type = "result<string, string>"
 # A cold switch re-verifies (compile + link) before enqueuing.
 exec.lock_expiry.minutes = 5
 location = "activity/tools/deployment-switch.js"
-content_digest = "sha256:c99b3e55990fdb02fe596eb109819a2e30aa4fcb620a004e8431c13e7cd32fb6"
+content_digest = "sha256:d3a96a5aaddbc8783d368efcc12b284779a9cda5953e7b0c773ec60fc097e0ce"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["PUT"]
@@ -417,7 +434,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/submit-workflow-execution.js"
-content_digest = "sha256:00b633f87677c648f633f18659f7891fb7bd2429c29cb86e3ee2e26c1bde8444"
+content_digest = "sha256:b3386df2f6e15fba840cef153766779ff799c9391f0f8216b884d99d57e6eab6"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
@@ -431,7 +449,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/pause-execution.js"
-content_digest = "sha256:bad2ec74517aac4e8b1f45ed998069c49aeb7f926ce6137ffd42f5dc70b6b609"
+content_digest = "sha256:2ba3bd41b2d6cbbb8fc99e18cefdc85dfbb3ea57d3afd062c0ee1dd17c3be344"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
@@ -445,7 +464,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/unpause-execution.js"
-content_digest = "sha256:e0d98a0d3734f2f1554d32a0ec56cafe4309114ae7b85b8a37e4c09365aa4e03"
+content_digest = "sha256:2b9a8765b6b672f5f48212a59141cc8d05cbb7530025f12a18629032ae2832e5"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
@@ -459,7 +479,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/cancel-execution.js"
-content_digest = "sha256:8ebba015d4b0ad6e06976c2336f605338c1a9585cead3d1f892805e1a6ed9178"
+content_digest = "sha256:4d8103eafc27fc2f11f3af74aae919b7f3562f06f83891543dc9eaad3b9eeb51"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]
@@ -474,7 +495,8 @@ params = [
 ]
 return_type = "result<string, string>"
 location = "activity/tools/stub-execution.js"
-content_digest = "sha256:5b43919f834f5ed1b0043893a7e3c2853dee36272d99c46c0711f18dba904d91"
+content_digest = "sha256:5c6d0bcb22f629d2e91012fbff3f6ec89fe8819cf4548bce8e42b9712d45088c"
+env_vars = [{ key = "OBELISK_API_URL", value = "${OBELISK_API_URL:-http://127.0.0.1:5005}" }]
 [[activity_js.allowed_host]]
 pattern = "${OBELISK_API_URL:-http://127.0.0.1:5005}"
 methods = ["GET", "PUT"]

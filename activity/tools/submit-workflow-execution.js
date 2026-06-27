@@ -12,7 +12,8 @@ export default async function submit_workflow_execution(executionId, prompt, bac
         params: [prompt, normalizedBackend],
     };
 
-    const base = process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005";
+    const base = process.env["OBELISK_API_URL"];
+    if (!base) throw "OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}`,
         {

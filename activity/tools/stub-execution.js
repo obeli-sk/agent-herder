@@ -9,7 +9,8 @@ export default async function stub_execution(executionId, resultJson) {
         throw "result-json must be an object with ok or err";
     }
 
-    const base = process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005";
+    const base = process.env["OBELISK_API_URL"];
+    if (!base) throw "OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}/stub`,
         {

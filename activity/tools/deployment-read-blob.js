@@ -7,7 +7,8 @@
 // fetches the body so the workflow can show or edit it.
 export default async function deployment_read_blob(digest) {
     if (typeof digest !== "string" || !digest.trim()) throw "digest is required";
-    const base = process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005";
+    const base = process.env["OBELISK_API_URL"];
+    if (!base) throw "OBELISK_API_URL is not configured";
     const resp = await fetch(`${base}/v1/files/${encodeURIComponent(digest.trim())}`);
     if (resp.status === 404) throw `no blob for digest ${digest}`;
     if (!resp.ok) throw `HTTP ${resp.status}: ${await resp.text()}`;

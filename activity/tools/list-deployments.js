@@ -2,7 +2,8 @@
 //   func(cursor-from: string, including-cursor: bool, length: u32)
 //     -> result<string, string>
 export default async function list_deployments(cursorFrom, includingCursor, length) {
-    const base = process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005";
+    const base = process.env["OBELISK_API_URL"];
+    if (!base) throw "OBELISK_API_URL is not configured";
     const params = [];
     if (cursorFrom) params.push(`cursor_from=${encodeURIComponent(cursorFrom)}`);
     if (includingCursor) params.push("including_cursor=true");

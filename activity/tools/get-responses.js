@@ -10,7 +10,8 @@ export default async function get_responses(executionId, cursor, includingCursor
         `including_cursor=${includingCursor ? "true" : "false"}`,
         `length=${encodeURIComponent(String(pageLength))}`,
     ];
-    const base = process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005";
+    const base = process.env["OBELISK_API_URL"];
+    if (!base) throw "OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}/responses?${params.join("&")}`,
         { headers: { accept: "application/json" } },

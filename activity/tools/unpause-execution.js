@@ -2,7 +2,8 @@
 //   func(execution-id: string) -> result<string, string>
 export default async function unpause_execution(executionId) {
     if (!executionId) throw "execution-id is required";
-    const base = process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005";
+    const base = process.env["OBELISK_API_URL"];
+    if (!base) throw "OBELISK_API_URL is not configured";
     const resp = await fetch(
         `${base}/v1/executions/${encodeURIComponent(executionId)}/unpause`,
         { method: "PUT", headers: { accept: "application/json" } },

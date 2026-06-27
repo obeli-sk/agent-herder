@@ -16,7 +16,8 @@ export default async function get_logs(
     length,
 ) {
     if (!executionId) throw "execution-id is required";
-    const base = process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005";
+    const base = process.env["OBELISK_API_URL"];
+    if (!base) throw "OBELISK_API_URL is not configured";
     const params = [
         `show_derived=${showDerived ? "true" : "false"}`,
         `show_logs=${showLogs ? "true" : "false"}`,

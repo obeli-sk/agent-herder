@@ -1,7 +1,8 @@
 // obelisk-agent:tools/webapi.list-functions:
 //   func(ffqn-prefix: string, length: u32) -> result<string, string>
 export default async function list_functions(ffqnPrefix, length) {
-    const base = process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005";
+    const base = process.env["OBELISK_API_URL"];
+    if (!base) throw "OBELISK_API_URL is not configured";
     const resp = await fetch(`${base}/v1/functions`, {
         headers: { accept: "application/json" },
     });

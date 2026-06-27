@@ -51,7 +51,8 @@ export default async function deployment_submit(
         contentByPath[path] = content;
     }
 
-    const base = process.env["OBELISK_API_URL"] || "http://127.0.0.1:5005";
+    const base = process.env["OBELISK_API_URL"];
+    if (!base) throw "OBELISK_API_URL is not configured";
     const wantedId = (typeof deploymentId === "string" && deploymentId.trim())
         ? deploymentId.trim() : null;
 
