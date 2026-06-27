@@ -583,17 +583,6 @@ return_type = "result<string, string>"
 location = "workflow/agent.js"
 content_digest = "sha256:d08dbd23903cfab5f3b4da768da819519baf1397106c3dc6cd8ef547102d8492"
 
-[[webhook_endpoint_js]]
-name = "ui"
-location = "webhook/ui.js"
-content_digest = "sha256:a9bbb468d2c65260797d9c50ac8abd1b54260173cbb472ba6fafa9bf98c74722"
-routes = [
-  { methods = ["GET"], route = "/" },
-]
-env_vars = [
-  { key = "OBELISK_UI_URL",  value = "${OBELISK_UI_URL:-http://127.0.0.1:8080}" },
-]
-
 # --- agent-herder GitHub export ----------------------------------------------
 # Activities for pushing the live deployment manifest + owned sources into a
 # GitHub repo. Each is invoked by workflow.push-deployment; the commit chain is
@@ -694,6 +683,7 @@ content_digest = "sha256:1811dc43ffe08a2f5f473e3c1a16d6c0554bfbc3d3c8d34f8393646
 name = "ui-api"
 location = "webhook/ui-api.js"
 routes = [
+  { methods = ["GET"], route = "/" },
   { methods = ["GET"], route = "/api/runs" },
   { methods = ["GET"], route = "/api/runs/:execution-id" },
   { methods = ["GET"], route = "/api/logs/:execution-id" },
